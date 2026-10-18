@@ -53,8 +53,40 @@ if (all.length && all.reduce((n, e) => n + e.textContent.trim().length, 0) > 200
 return [doc.body];
 };
 const isPdf = e => { const s = e.getAttribute('src') || e.getAttribute('data') || ''; return s && (/\.pdf([?#]|$)/i.test(s) || /pdf/i.test(e.getAttribute('type') || '')); };
+// a formula (MathML, like OneNote and many sites write them) as text a person and Scriba can read: a^(m + n), (a^m)/(a^n)
+const mathText = m => {
+const k = [...m.children], one = e => mathText(e);
+const wrap = s => /^[\p{L}\p{N}.,]+$/u.test(s) || /^\(.*\)$/.test(s) && !/\)\s*\S.*\(/.test(s.slice(1, -1)) ? s : '(' + s + ')';
+switch (m.localName) {
+case 'mi': case 'mn': case 'mtext': case 'ms': return m.textContent.trim();
+case 'mo': { const t = m.textContent.trim(); return /^[=+−\-⋅·×÷<>≤≥≈≠:|]$/.test(t) ? ' ' + t + ' ' : t; }
+case 'mspace': return ' ';
+case 'msup': return wrap(one(k[0])) + '^' + wrap(one(k[1]));
+case 'msub': return wrap(one(k[0])) + '_' + wrap(one(k[1]));
+case 'msubsup': return wrap(one(k[0])) + '_' + wrap(one(k[1])) + '^' + wrap(one(k[2]));
+case 'mfrac': return wrap(one(k[0])) + '/' + wrap(one(k[1]));
+case 'msqrt': return '√' + wrap(k.map(one).join(''));
+case 'mroot': return one(k[1]) + '√' + wrap(one(k[0]));
+case 'munder': return one(k[0]) + '_' + wrap(one(k[1]));
+case 'mover': return one(k[0]) + '^' + wrap(one(k[1]));
+case 'munderover': return one(k[0]) + '_' + wrap(one(k[1])) + '^' + wrap(one(k[2]));
+case 'mtable': return k.map(one).join('; ');
+case 'mtr': return k.map(one).join(', ');
+case 'annotation': case 'annotation-xml': return '';
+default: return k.length ? k.map(one).join('') : m.textContent.trim();
+}
+};
 // what is left of a page's content for paper: no navigation, buttons, site colors or links to the page before and after
 const tidy = (c, base) => {
+// formulas as text: a printed formula loses its exponents when the PDF is read (2^3 would become 23)
+c.querySelectorAll('.RawEquation,.EquationPlaceholderText').forEach(e => e.remove());
+c.querySelectorAll('math').forEach(m => {
+const tex = m.querySelector('annotation[encoding*="tex"]');
+const t = tex ? '$' + tex.textContent.trim() + '$' : mathText(m).replace(/\s+/g, ' ').trim();
+const e = document.createElement(m.getAttribute('display') === 'block' ? 'div' : 'span');
+e.textContent = t;
+m.replaceWith(e);
+});
 // a PDF shown in the page prints as an empty box: a link to it instead
 c.querySelectorAll('iframe,embed,object').forEach(e => {
 if (!isPdf(e)) return;
@@ -372,7 +404,8 @@ const css = 'body{font:15px/1.6 -apple-system,"Segoe UI",system-ui,sans-serif;co
 + '.buch-pdf-page+.buch-pdf-page{border-top:1px solid #ddd;margin-top:30px;padding-top:14px}a{color:inherit}'
 + '.buch-pdf-where{font-size:12px;color:#777;margin:0 0 10px}'
 + (breaks ? '.buch-pdf-page+.buch-pdf-page{break-before:page;border-top:0;margin-top:0;padding-top:0}' : '')
-+ '@page{margin:16mm}@media print{body{padding:0;max-width:none}h1,h2,h3,h4{break-after:avoid}img,pre,table,figure{break-inside:avoid}}';
+// own (empty) page margin boxes: Chrome then prints no address, date or page count of its own
++ '@page{margin:16mm;@top-left{content:""}@top-center{content:""}@top-right{content:""}@bottom-left{content:""}@bottom-center{content:""}@bottom-right{content:""}}@media print{body{padding:0;max-width:none}h1,h2,h3,h4{break-after:avoid}img,pre,table,figure{break-inside:avoid}}';
 const n = parts.length, lang = document.documentElement.lang || 'en';
 document.open();
 document.write('<!doctype html><html lang="' + esc(lang) + '"><head><meta charset="utf-8"><title>' + esc(title) + '</title><style>' + css + '</style></head><body>'
