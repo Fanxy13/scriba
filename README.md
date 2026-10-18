@@ -39,6 +39,11 @@ Lotus zeigt, was das Plugin darf, und fragt dich. Danach ein neues Terminalfenst
 
 Neue Unterlagen? **`/scriba reload`** – es fragt, welches Fach, und wandelt nur Neues und Geändertes um.
 
+## Buch → PDF
+
+Ein Online-Buch (Moodle-Buch, Skript, Doku) als PDF für Scriba: **[fanxy13.github.io/scriba](https://fanxy13.github.io/scriba/)** –
+den Knopf in die Lesezeichenleiste ziehen, im Buch klicken, «Als PDF sichern».
+
 ## Befehle
 
 | Befehl | Was es macht |
