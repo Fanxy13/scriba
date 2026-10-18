@@ -1,20 +1,27 @@
 // scriba-extract – the text of school documents, for Scriba (a Lotus plugin). Everything runs on this Mac:
 // PDFKit reads PDFs, Apple's Vision reads text in pictures and scans, Office files are read from their XML.
 //
-//   scriba-extract <file> <out>    the text of <file> into <out>, in units (pages, slides, sheets):
+//   scriba-extract <file> <out> [<pictures>]
+//                                    the text of <file> into <out>, in units (pages, slides, sheets):
 //                                    "\u{1E}<label>\u{1F}<kind>" on a line of its own, then the text
 //                                    label: "S. 3", "Folie 2", "Blatt Noten" or "" (the whole file)
 //                                    kind:  text · math (formulas a PDF may have broken) · ocr (all of it read
 //                                           from a picture) · pic (text, and blocks "[Bildtext]" … read from
 //                                           pictures in it, each ending with an empty line) · code · note
-//                                    on stdout: progress ("page <n> <of>"), or "error <what>" and status 1
+//                                    on stdout: progress ("page <n> <of>"), or "error <what>" and status 1;
+//                                    status 3: the text recognition of macOS hung (it does, rarely) – what it read
+//                                    up to then is written, and a new run usually goes through
 //                                    (stderr is silenced – PDFKit and CoreText talk a lot there)
+//                                    with <pictures>: the pictures of the file go into that folder (PDF pictures cut
+//                                    out of their page, a scanned page whole), and a line "\u{1D}<file>\u{1D}<alt>"
+//                                    stands where each one was
 //   scriba-extract --version
 //
 // Formulas of Word and PowerPoint become LaTeX, tables become Markdown tables, Excel formulas are kept next to
 // their values. Headers and footers that repeat on every page are left out – they only cost tokens.
 
 import AppKit
+import CoreImage
 import Foundation
 import PDFKit
 import Vision
@@ -37,15 +44,26 @@ let ocrLanguages: [String] = {
     return want.isEmpty ? ["en-US"] : want
 }()
 
+var ocrHung = false
+
 /// The lines of text in a picture, top to bottom; pieces side by side are kept apart by two spaces
 /// minimum: how sure Vision has to be – higher for pictures inside documents (screenshots make noise)
+/// Vision gets a minute (its first start on a Mac can take half of that). When it hangs, there is no more text
+/// recognition in this run – the program ends with status 3 and Scriba starts it once more.
 func ocr(_ image: CGImage, _ orientation: CGImagePropertyOrientation = .up, minimum: Float = 0.3) -> [String] {
-    guard image.width >= 24, image.height >= 24 else { return [] }
+    guard !ocrHung, image.width >= 24, image.height >= 24 else { return [] }
     let req = VNRecognizeTextRequest()
     req.recognitionLevel = .accurate
     req.usesLanguageCorrection = true
     req.recognitionLanguages = ocrLanguages
-    do { try VNImageRequestHandler(cgImage: image, orientation: orientation).perform([req]) } catch { return [] }
+    let done = DispatchSemaphore(value: 0)
+    var failed = false
+    DispatchQueue.global(qos: .userInitiated).async {
+        do { try VNImageRequestHandler(cgImage: image, orientation: orientation).perform([req]) } catch { failed = true }
+        done.signal()
+    }
+    if done.wait(timeout: .now() + 60) == .timedOut { ocrHung = true; return [] }
+    if failed { return [] }
     struct Piece { let x, y, h: CGFloat; let s: String }
     var pieces: [Piece] = (req.results ?? []).compactMap { o in
         guard let c = o.topCandidates(1).first, c.confidence >= minimum else { return nil }
@@ -73,13 +91,74 @@ func loadImage(_ url: URL) -> (CGImage, CGImagePropertyOrientation)? {
     return (img, CGImagePropertyOrientation(rawValue: raw) ?? .up)
 }
 
-/// The text of a picture inside a document as lines: "[Bildtext]" and what it says, "[Bild]" for a larger picture
-/// without text, nothing for small decoration
-func pictureLines(_ url: URL) -> [String] {
-    guard let (img, orientation) = loadImage(url) else { return [] }
+// ── Pictures for the Markdown ──────────────────────────────────
+
+var pictureDir: URL? = nil                 // the third argument – without it no pictures are kept
+var pictureSeen = Set<String>()            // a picture of a document is shown and read once (a logo on every slide)
+var pictureCounts: [String: Int] = [:]
+
+/// "Bild S. 3" – what a picture is called in the Markdown
+func alt(_ label: String) -> String { label.isEmpty ? "Bild" : "Bild \(label)" }
+
+/// The line that stands for a picture: "\u{1D}<file>\u{1D}<alt>"
+func pictureMark(_ file: String, _ label: String) -> String { "\u{1D}\(file)\u{1D}\(alt(label))" }
+
+/// A free name in the picture folder: "S3-1.jpg", "Folie2-1.png", "Bild-1.png"
+func pictureName(_ label: String, _ ext: String) -> String {
+    let base = label.isEmpty ? "Bild" : label.replacingOccurrences(of: ".", with: "").replacingOccurrences(of: " ", with: "")
+    let n = (pictureCounts[base] ?? 0) + 1
+    pictureCounts[base] = n
+    return "\(base)-\(n).\(ext)"
+}
+
+/// The picture turned upright, at most 1600 pixels on its long side
+func upright(_ img: CGImage, _ orientation: CGImagePropertyOrientation) -> CGImage {
+    var ci = CIImage(cgImage: img).oriented(orientation)
+    let long = max(ci.extent.width, ci.extent.height)
+    if long > 1600 { ci = ci.transformed(by: CGAffineTransform(scaleX: 1600 / long, y: 1600 / long)) }
+    if orientation == .up, long <= 1600 { return img }
+    return CIContext().createCGImage(ci, from: ci.extent.integral) ?? img
+}
+
+/// Writes a picture into the folder → its name
+func savePicture(_ img: CGImage, _ label: String, jpeg: Bool) -> String? {
+    guard let dir = pictureDir else { return nil }
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let name = pictureName(label, jpeg ? "jpg" : "png")
+    guard let dest = CGImageDestinationCreateWithURL(dir.appendingPathComponent(name) as CFURL,
+                                                     (jpeg ? "public.jpeg" : "public.png") as CFString, 1, nil) else { return nil }
+    CGImageDestinationAddImage(dest, img, jpeg ? [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary : nil)
+    return CGImageDestinationFinalize(dest) ? name : nil
+}
+
+/// A picture file of a document into the folder: copied as it is when a browser shows it and it is not too large,
+/// otherwise as PNG or JPEG → its name
+func keepPicture(_ url: URL, _ img: CGImage, _ orientation: CGImagePropertyOrientation, _ label: String) -> String? {
+    guard let dir = pictureDir else { return nil }
+    let ext = url.pathExtension.lowercased()
+    if ["png", "jpg", "jpeg", "gif"].contains(ext), orientation == .up, max(img.width, img.height) <= 1600 {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let name = pictureName(label, ext == "jpeg" ? "jpg" : ext)
+        return (try? FileManager.default.copyItem(at: url, to: dir.appendingPathComponent(name))) != nil ? name : nil
+    }
+    let opaque = [.none, .noneSkipLast, .noneSkipFirst].contains(img.alphaInfo)
+    return savePicture(upright(img, orientation), label, jpeg: opaque && ext != "png")
+}
+
+/// A picture inside a document as lines: the picture (when they are kept), then "[Bildtext]" and what it says.
+/// "[Bild]" for a larger picture without text when pictures are not kept; nothing for small decoration and for a
+/// picture that was shown before.
+func pictureLines(_ url: URL, _ label: String) -> [String] {
+    guard pictureSeen.insert(url.standardizedFileURL.path).inserted, let (img, orientation) = loadImage(url) else { return [] }
+    let big = img.width >= 120 && img.height >= 60 && img.width * img.height >= 20_000
     let lines = cleanLines(ocr(img, orientation, minimum: 0.5).joined(separator: "\n")).filter { $0.count >= 3 }
-    if lines.isEmpty { return img.width >= 200 && img.height >= 150 ? ["[Bild]", ""] : [] }
-    return ["[Bildtext]"] + lines + [""]
+    var out: [String] = []
+    if big, let name = keepPicture(url, img, orientation, label) { out.append(pictureMark(name, label)) }
+    if lines.isEmpty {
+        if out.isEmpty, img.width >= 200, img.height >= 150 { out.append("[Bild]") }
+        return out.isEmpty ? [] : out + [""]
+    }
+    return out + ["[Bildtext]"] + lines + [""]
 }
 
 // ── Lines ──────────────────────────────────────────────────────
@@ -97,6 +176,13 @@ let squeeze: [(NSRegularExpression, String)] = [
     (try! NSRegularExpression(pattern: #"(?<=\S) {3,}(?=\S)"#), "  "),
 ]
 
+/// HTML tags in running text ("Tags wie <h1> und <p>") as code – a Markdown viewer would take them as HTML
+let tags = try! NSRegularExpression(pattern: #"</?[A-Za-z][A-Za-z0-9-]*(?:\s+[^<>]*?)?/?>"#)
+func codeTags(_ s: String) -> String {
+    guard s.contains("<"), !s.contains("`") else { return s }
+    return tags.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "`$0`")
+}
+
 /// Text → lines without trailing spaces, at most one empty line in a row, words split at the end of a line joined
 func cleanLines(_ text: String) -> [String] {
     var t = text
@@ -107,6 +193,7 @@ func cleanLines(_ text: String) -> [String] {
         for (re, with) in squeeze where line.count >= 4 {
             line = re.stringByReplacingMatches(in: line, range: NSRange(line.startIndex..., in: line), withTemplate: with)
         }
+        line = codeTags(line)
         while line.last == " " { line.removeLast() }
         if line.trimmingCharacters(in: .whitespaces).isEmpty {
             if let last = out.last, !last.isEmpty { out.append("") }
@@ -227,6 +314,129 @@ func render(_ page: PDFPage) -> CGImage? {
         .cgImage(forProposedRect: nil, context: nil, hints: nil)
 }
 
+/// Where a page draws its pictures: its content is read like a PDF viewer does (q Q cm, Do of images and forms)
+final class Drawn {
+    var ctm = CGAffineTransform.identity
+    var saved: [CGAffineTransform] = []
+    var rects: [CGRect] = []
+    var depth = 0
+}
+
+func drawn(_ info: UnsafeMutableRawPointer?) -> Drawn { Unmanaged<Drawn>.fromOpaque(info!).takeUnretainedValue() }
+
+func pdfMatrix(_ v: [CGPDFReal]) -> CGAffineTransform { CGAffineTransform(a: v[0], b: v[1], c: v[2], d: v[3], tx: v[4], ty: v[5]) }
+
+let pdfOperators: CGPDFOperatorTableRef = {
+    let t = CGPDFOperatorTableCreate()!
+    CGPDFOperatorTableSetCallback(t, "q") { _, info in let d = drawn(info); d.saved.append(d.ctm) }
+    CGPDFOperatorTableSetCallback(t, "Q") { _, info in let d = drawn(info); if let m = d.saved.popLast() { d.ctm = m } }
+    CGPDFOperatorTableSetCallback(t, "cm") { scanner, info in
+        var v = [CGPDFReal](repeating: 0, count: 6)
+        for i in (0..<6).reversed() { guard CGPDFScannerPopNumber(scanner, &v[i]) else { return } }
+        let d = drawn(info)
+        d.ctm = pdfMatrix(v).concatenating(d.ctm)
+    }
+    CGPDFOperatorTableSetCallback(t, "Do") { scanner, info in pdfDo(scanner, info) }
+    return t
+}()
+
+func pdfDo(_ scanner: CGPDFScannerRef, _ info: UnsafeMutableRawPointer?) {
+    let d = drawn(info)
+    var name: UnsafePointer<CChar>?
+    guard CGPDFScannerPopName(scanner, &name), let name else { return }
+    let cs = CGPDFScannerGetContentStream(scanner)
+    guard let obj = CGPDFContentStreamGetResource(cs, "XObject", name) else { return }
+    var stream: CGPDFStreamRef?
+    guard CGPDFObjectGetValue(obj, .stream, &stream), let stream, let dict = CGPDFStreamGetDictionary(stream) else { return }
+    var sub: UnsafePointer<CChar>?
+    guard CGPDFDictionaryGetName(dict, "Subtype", &sub), let sub else { return }
+    switch String(cString: sub) {
+    case "Image":
+        d.rects.append(CGRect(x: 0, y: 0, width: 1, height: 1).applying(d.ctm))
+    case "Form" where d.depth < 4:
+        var m = CGAffineTransform.identity
+        var arr: CGPDFArrayRef?
+        if CGPDFDictionaryGetArray(dict, "Matrix", &arr), let arr, CGPDFArrayGetCount(arr) == 6 {
+            var v = [CGPDFReal](repeating: 0, count: 6)
+            for i in 0..<6 { CGPDFArrayGetNumber(arr, i, &v[i]) }
+            m = pdfMatrix(v)
+        }
+        var res: CGPDFDictionaryRef?
+        guard CGPDFDictionaryGetDictionary(dict, "Resources", &res), let res else { return }   // no resources: no pictures
+        let inner = CGPDFContentStreamCreateWithStream(stream, res, cs)
+        let before = d.ctm, saved = d.saved
+        d.ctm = m.concatenating(d.ctm)
+        d.depth += 1
+        let sc = CGPDFScannerCreate(inner, pdfOperators, info)
+        CGPDFScannerScan(sc)
+        CGPDFScannerRelease(sc)
+        CGPDFContentStreamRelease(inner)
+        d.depth -= 1
+        d.ctm = before
+        d.saved = saved
+    default: break
+    }
+}
+
+/// The places of the pictures on a page, in its points: big enough to show, side by side ones joined, at most 8
+func pictureRects(_ page: CGPDFPage?) -> [CGRect] {
+    guard let page else { return [] }
+    let d = Drawn()
+    let cs = CGPDFContentStreamCreateWithPage(page)
+    let sc = CGPDFScannerCreate(cs, pdfOperators, Unmanaged.passUnretained(d).toOpaque())
+    CGPDFScannerScan(sc)
+    CGPDFScannerRelease(sc)
+    CGPDFContentStreamRelease(cs)
+    let box = page.getBoxRect(.mediaBox)
+    var rs: [CGRect] = []
+    for r in d.rects {
+        let c = r.standardized.intersection(box)
+        if !c.isNull, c.width >= 48, c.height >= 36, c.width * c.height >= 6000 { rs.append(c) }
+    }
+    var joined = true
+    while joined {
+        joined = false
+        outer: for i in rs.indices {
+            for j in rs.indices where j > i {
+                let near: CGRect = rs[i].insetBy(dx: -4, dy: -4)
+                if near.intersects(rs[j]) { rs[i] = rs[i].union(rs[j]); rs.remove(at: j); joined = true; break outer }
+            }
+        }
+    }
+    let ordered: [CGRect] = rs.sorted { (a: CGRect, b: CGRect) -> Bool in
+        abs(a.maxY - b.maxY) > 8 ? a.maxY > b.maxY : a.minX < b.minX
+    }
+    return Array(ordered.prefix(8))
+}
+
+/// A part of a page as a picture, at most 1600 pixels on its long side
+func crop(_ page: CGPDFPage, _ r: CGRect) -> CGImage? {
+    let scale = min(3, 1600 / max(r.width, r.height))
+    let w = Int(r.width * scale), h = Int(r.height * scale)
+    guard w > 8, h > 8, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                            space: CGColorSpaceCreateDeviceRGB(),
+                                            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+    ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+    ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+    ctx.scaleBy(x: scale, y: scale)
+    ctx.translateBy(x: -r.minX, y: -r.minY)
+    ctx.drawPDFPage(page)
+    return ctx.makeImage()
+}
+
+/// Pictures at the same place on most pages (a logo in the header) are decoration, not content
+func dropDecoration(_ rects: inout [[CGRect]], _ box: (Int) -> CGRect) {
+    let n = rects.filter { !$0.isEmpty }.count
+    guard n >= 3 else { return }
+    func key(_ r: CGRect) -> String { "\(Int(r.minX / 4)) \(Int(r.minY / 4)) \(Int(r.width / 4)) \(Int(r.height / 4))" }
+    var count: [String: Int] = [:]
+    for page in rects { for k in Set(page.map(key)) { count[k, default: 0] += 1 } }
+    for i in rects.indices {
+        let area = box(i).width * box(i).height
+        rects[i] = rects[i].filter { r in r.width * r.height > area * 0.5 || (count[key(r)] ?? 0) < max(3, (n + 1) / 2) }
+    }
+}
+
 /// Words that are already in the page's text – a line read from the picture that only repeats them is left out
 func repeats(_ line: String, _ words: Set<String>) -> Bool {
     let w = line.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map { norm(String($0)) }.filter { $0.count >= 3 }
@@ -238,10 +448,21 @@ func pdf(_ url: URL) throws -> [Unit] {
     guard let doc = PDFDocument(url: url) else { throw Fail("Das PDF lässt sich nicht öffnen") }
     if doc.isLocked { return [Unit(label: "", kind: "note", text: "[Das PDF ist mit einem Passwort geschützt]")] }
     let n = doc.pageCount
-    var pages: [[String]] = [], extra: [[String]] = [], kinds: [String] = []
+    var pages: [[String]] = [], extra: [[String]] = [], kinds: [String] = [], shown: [[String]] = []
+    var places: [[CGRect]] = pictureDir == nil ? [] : (0..<n).map { pictureRects(doc.page(at: $0)?.pageRef) }
+    if !places.isEmpty { dropDecoration(&places) { doc.page(at: $0)?.bounds(for: .mediaBox) ?? .zero } }
     for i in 0..<n {
         progress(i + 1, n)
         autoreleasepool {
+            var marks: [String] = []
+            if i < places.count, let ref = doc.page(at: i)?.pageRef {
+                for r in places[i] {
+                    if let img = crop(ref, r), let name = savePicture(img, n > 1 ? "S. \(i + 1)" : "", jpeg: true) {
+                        marks.append(pictureMark(name, n > 1 ? "S. \(i + 1)" : ""))
+                    }
+                }
+            }
+            shown.append(marks)
             guard let page = doc.page(at: i) else { pages.append([]); extra.append([]); kinds.append("text"); return }
             let text = page.string ?? ""
             var lines = cleanLines(text), more: [String] = []
@@ -265,6 +486,9 @@ func pdf(_ url: URL) throws -> [Unit] {
     var units: [Unit] = []
     for i in 0..<n {
         var lines = pages[i]
+        // the pictures: a scan before its text, others after the text and before what was read from them
+        if kinds[i] == "ocr" { lines = shown[i] + (shown[i].isEmpty ? [] : [""]) + lines }
+        else if !shown[i].isEmpty { lines += (lines.isEmpty ? [] : [""]) + shown[i] }
         if !extra[i].isEmpty { lines += (lines.isEmpty ? [] : [""]) + ["[Bildtext]"] + extra[i] + [""] }
         while lines.last?.isEmpty == true { lines.removeLast() }
         if lines.joined().trimmingCharacters(in: .whitespaces).isEmpty { continue }
@@ -279,8 +503,9 @@ func picture(_ url: URL) throws -> [Unit] {
     progress(1, 1)
     guard let (img, orientation) = loadImage(url) else { throw Fail("Das Bild lässt sich nicht öffnen") }
     let lines = cleanLines(ocr(img, orientation).joined(separator: "\n"))
-    if lines.isEmpty { return [Unit(label: "", kind: "note", text: "[Bild ohne lesbaren Text]")] }
-    return [Unit(label: "", kind: "ocr", text: lines.joined(separator: "\n"))]
+    let mark = keepPicture(url, img, orientation, "").map { [pictureMark($0, ""), ""] } ?? []
+    if lines.isEmpty { return [Unit(label: "", kind: "note", text: (mark + ["[Bild ohne lesbaren Text]"]).joined(separator: "\n"))] }
+    return [Unit(label: "", kind: "ocr", text: (mark + lines).joined(separator: "\n"))]
 }
 
 // ── XML of Office files ────────────────────────────────────────
@@ -524,7 +749,7 @@ final class WordReader {
         }
         var s = "", after: [String] = []
         inline(p, &s, &after)
-        let text = s.trimmingCharacters(in: .whitespaces)
+        let text = codeTags(s.trimmingCharacters(in: .whitespaces))
         if !text.isEmpty {
             add(prefix.hasPrefix("#") ? prefix + text.replacingOccurrences(of: "\n", with: " ") : prefix + text)
             if prefix.hasPrefix("#") || prefix.isEmpty { add("") }
@@ -570,8 +795,8 @@ final class WordReader {
         }
         let id = n.find("a:blip")?.attr("r:embed") ?? n.find("v:imagedata")?.attr("r:id")
         guard let id, let target = rels[id] else { return [] }
-        let lines = pictureLines(target.path)
-        if lines.first == "[Bildtext]" { pictures = true }
+        let lines = pictureLines(target.path, "")
+        if lines.contains("[Bildtext]") { pictures = true }
         return lines
     }
 
@@ -594,7 +819,7 @@ final class WordReader {
                 for b in c.findAll("w:p") {
                     var s = "", after: [String] = []
                     inline(b, &s, &after)
-                    let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let t = codeTags(s.trimmingCharacters(in: .whitespacesAndNewlines))
                     if !t.isEmpty { parts.append(t) }
                     parts += after.filter { $0 != "[Bild]" && !$0.isEmpty }
                 }
@@ -623,6 +848,7 @@ func pptx(_ dir: URL) throws -> [Unit] {
         let part = target.path.path.replacingOccurrences(of: dir.path + "/", with: "")
         let srels = relations(dir, part: part)
         var lines: [String] = [], read = false
+        slideLabel = "Folie \(i + 1)"
         autoreleasepool {
             if let tree = slide.find("p:spTree") { shapes(tree, &lines, &read, srels) }
             // the speaker's notes often explain the slide
@@ -641,6 +867,8 @@ func pptx(_ dir: URL) throws -> [Unit] {
     }
     return units
 }
+
+var slideLabel = ""
 
 func shapes(_ n: Node, _ out: inout [String], _ read: inout Bool, _ rels: [String: (path: URL, type: String)]) {
     for k in n.kids {
@@ -663,8 +891,8 @@ func shapes(_ n: Node, _ out: inout [String], _ read: inout Bool, _ rels: [Strin
             }
         case "p:pic":
             if let id = k.find("a:blip")?.attr("r:embed"), let target = rels[id] {
-                let lines = pictureLines(target.path)
-                if lines.first == "[Bildtext]" { read = true }
+                let lines = pictureLines(target.path, slideLabel)
+                if lines.contains("[Bildtext]") { read = true }
                 out += lines
             }
         default: break
@@ -679,7 +907,7 @@ func paragraphs(_ body: Node?, bullets: Bool) -> [String] {
     for p in body.all("a:p") {
         var s = ""
         runs(p, &s)
-        let t = s.trimmingCharacters(in: .whitespaces)
+        let t = codeTags(s.trimmingCharacters(in: .whitespaces))
         if t.isEmpty { continue }
         let ppr = p.first("a:pPr")
         let level = Int(ppr?.attr("lvl") ?? "0") ?? 0
@@ -863,8 +1091,9 @@ func rich(_ url: URL) throws -> [Unit] {
 
 let args = CommandLine.arguments
 if args.count == 2, args[1] == "--version" { print("scriba-extract 1"); exit(0) }
-guard args.count == 3 else { print("error usage: scriba-extract <file> <out>"); exit(2) }
+guard args.count == 3 || args.count == 4 else { print("error usage: scriba-extract <file> <out> [<pictures>]"); exit(2) }
 let file = URL(fileURLWithPath: args[1]), outFile = URL(fileURLWithPath: args[2])
+if args.count == 4 { pictureDir = URL(fileURLWithPath: args[3]) }
 let ext = file.pathExtension.lowercased()
 do {
     let units: [Unit]
@@ -883,6 +1112,7 @@ do {
         out += "\u{1E}\(u.label)\u{1F}\(u.kind)\n\(u.text)\n"
     }
     try out.write(to: outFile, atomically: true, encoding: .utf8)
+    if ocrHung { exit(3) }
 } catch {
     print("error \(error)")
     exit(1)

@@ -59,6 +59,7 @@ Schule (Claude)/
 ├── Mathematik.md          ← alles von Mathematik in einer Datei – das lädst du hoch
 ├── Mathematik/            ← jede Datei einzeln
 │   ├── Kapitel 1/Bruchrechnen.docx.md
+│   ├── Kapitel 1/Bruchrechnen.docx Bilder/   ← ihre Bilder
 │   └── Tafelbild.jpg.md
 ├── Deutsch.md
 └── …
@@ -74,6 +75,7 @@ Brüche addieren: $\frac{3}{4}+\frac{1}{8}=\frac{7}{8}$
 
 [S. 2]
 Was gibt diese Methode zurück?
+![Bild](Bruchrechnen.docx%20Bilder/Bild-1.png)
 [Bildtext]
 ```java
 public int summe(int a, int b) {
@@ -86,6 +88,10 @@ public int summe(int a, int b) {
 - **Formeln** werden zu LaTeX – aus Word und PowerPoint exakt, aus PDFs und Scans mit Hilfe der KI.
 - **Excel**: Tabellen mit den Formeln neben den Werten (`3.6 (=B2*C2)`).
 - **Scans und Fotos** liest die Texterkennung von macOS; Text in Bildern und Screenshots wird als `[Bildtext]` angehängt.
+- **Bilder** stehen als Bilder in den .md-Dateien, dort wo sie im Original waren – aus PDFs genau ausgeschnitten,
+  gescannte Seiten ganz. Du siehst sie in jedem Markdown-Programm (VS Code, Obsidian, Typora, GitHub); die Vorschau
+  im Finder zeigt .md nur als Text. Claude sieht Bilder in einer .md-Datei nicht, es liest ihren erkannten Text –
+  brauchst du ein Bild in Claude, lade es aus dem `… Bilder`-Ordner in den Chat.
 - Kopf- und Fusszeilen, Seitenzahlen und Punkte im Inhaltsverzeichnis fliegen raus – die kosten nur Tokens.
 
 ## Die KI
@@ -107,6 +113,7 @@ Ohne KI geht es auch – dann nur mit Texterkennung, schneller. Einstellen in `/
 | Ausgabe | wo die Texte landen – Standard: neben dem Schulordner |
 | KI | Automatisch, das Modell auf dem Mac, Apple Intelligence, Ollama oder aus |
 | KI liest | nur Scans, Bilder und Formeln (schnell) oder jede Seite (sauberer, langsam) |
+| Bilder | zeigen (Standard) oder weglassen |
 | Ausbildung, Lehrjahr | kommen in den Coach-Prompt |
 | Neu umwandeln | alle Fächer noch einmal ganz |
 
@@ -134,6 +141,7 @@ Deine Ausbildung und dein Lehrjahr stellst du in den Einstellungen ein – `p` s
   Texterkennung wird beim ersten Mal auf deinem Mac gebaut (etwa 20 Sekunden).
 - Scriba ändert nie etwas in deinem Schulordner. Es liest nur und schreibt in den Ausgabeordner.
 - Ctrl-C stoppt – was fertig ist, bleibt gespeichert.
+- Schon mit Scriba 1.0 umgewandelt? «Neu umwandeln» in den Einstellungen holt die Bilder auch für diese Dateien.
 - Neue Dateien zeigt dir Lotus auf dem Startbildschirm: «Scriba: 3 Dateien neu in Mathematik».
 
 ## Deinstallieren

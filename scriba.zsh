@@ -9,16 +9,18 @@
 # recognition and the XML of Office files – built once on this Mac. A local AI (Lotus' model on this Mac, Apple
 # Intelligence or Ollama) cleans up what was read from scans, pictures and formulas. While it works, the lotus of
 # Lotus blooms (Lotus' own progress screen, lib/bg/progress.zsh).
+# Pictures go into "<file> Bilder/" next to the file's .md and are linked where they were (![Bild S. 3](…)), so a
+# Markdown viewer shows them; Claude reads the text that was recognized in them.
 # Settings: $LOTUS_PLUGIN_DATA/settings, one KEY=value per line – SC_ROOT, SC_OUT, SC_AI (auto|local|apple|ollama|
-# off), SC_FOR (auto|all), SC_JOB, SC_YEAR – so a Lotus plugin pack can set them.
+# off), SC_FOR (auto|all), SC_IMG (yes|no), SC_JOB, SC_YEAR – so a Lotus plugin pack can set them.
 setopt extendedglob
 zmodload zsh/datetime zsh/system 2>/dev/null
 zmodload -F zsh/stat b:zstat 2>/dev/null
 zmodload -F zsh/files b:zf_mkdir 2>/dev/null
 
 typeset -g SC_CONF=${LOTUS_PLUGIN_DATA:?Lotus starts this}/settings
-typeset -g SC_ROOT= SC_OUT= SC_AI=auto SC_FOR=auto SC_YEAR=1 SC_JOB="Informatiker/in EFZ, Fachrichtung Applikationsentwicklung"
-typeset -g SC_MSG= SC_BIN= SC_TMP= SC_PROVIDER= SC_AI_LABEL= SC_ERR= RS=$'\x1e' US=$'\x1f' N=$'\n' T=$'\t'
+typeset -g SC_ROOT= SC_OUT= SC_AI=auto SC_FOR=auto SC_IMG=yes SC_YEAR=1 SC_JOB="Informatiker/in EFZ, Fachrichtung Applikationsentwicklung"
+typeset -g SC_MSG= SC_BIN= SC_TMP= SC_PROVIDER= SC_AI_LABEL= SC_ERR= RS=$'\x1e' US=$'\x1f' GS=$'\x1d' N=$'\n' T=$'\t'
 typeset -gi SC_STOP=0 SC_MODEL_STARTED=0 W=80 H=24 SC_BLOOMED=0
 typeset -ga SC_SUBJ=() SC_NEW=() SC_GONE=() SC_ALL=() SC_SKIP=() SC_UL=() SC_UK=() SC_UT=()
 typeset -gA SC_M=()
@@ -37,16 +39,18 @@ load() {
       SC_ROOT=*) SC_ROOT=${line#*=} ;;   SC_OUT=*) SC_OUT=${line#*=} ;;
       SC_AI=*)   SC_AI=${line#*=} ;;     SC_FOR=*) SC_FOR=${line#*=} ;;
       SC_JOB=*)  SC_JOB=${line#*=} ;;    SC_YEAR=*) SC_YEAR=${line#*=} ;;
+      SC_IMG=*)  SC_IMG=${line#*=} ;;
     esac
   done
   [[ $SC_ROOT == '~'(|/*) ]] && SC_ROOT=$HOME${SC_ROOT#\~}
   [[ $SC_OUT == '~'(|/*) ]] && SC_OUT=$HOME${SC_OUT#\~}
   [[ $SC_AI == (auto|local|apple|ollama|off) ]] || SC_AI=auto
   [[ $SC_FOR == (auto|all) ]] || SC_FOR=auto
+  [[ $SC_IMG == (yes|no) ]] || SC_IMG=yes
   [[ $SC_YEAR == [1-4] ]] || SC_YEAR=1
 }
 save() {
-  print -rl -- "SC_ROOT=$SC_ROOT" "SC_OUT=$SC_OUT" "SC_AI=$SC_AI" "SC_FOR=$SC_FOR" "SC_JOB=$SC_JOB" "SC_YEAR=$SC_YEAR" >| $SC_CONF
+  print -rl -- "SC_ROOT=$SC_ROOT" "SC_OUT=$SC_OUT" "SC_AI=$SC_AI" "SC_FOR=$SC_FOR" "SC_IMG=$SC_IMG" "SC_JOB=$SC_JOB" "SC_YEAR=$SC_YEAR" >| $SC_CONF
 }
 
 # Where the text goes → REPLY: the folder of the settings, or "<school folder> (Claude)" next to it
@@ -178,18 +182,38 @@ await() {   # <pid> [<at most seconds>]
   wait $pid
 }
 
-# <file> <out>: the text of a file into <out>, with its pages on the progress screen → status; SC_ERR the reason
+# <file> <out> [<pictures>]: the text of a file into <out> (its pictures into <pictures>), with its pages on the
+# progress screen → status; SC_ERR the reason. When the text recognition of macOS hung (status 3, rare), it starts
+# once more; a program that says nothing for 10 minutes is stopped.
 extract() {
+  local -i rc=1 tries
+  for (( tries = 1; tries <= 2; tries++ )); do
+    _extract_once "$@"; rc=$?
+    (( rc == 3 && tries == 1 && ! SC_STOP )) || break
+    bg_ui_note "Texterkennung hing – noch einmal"
+    [[ $3 == ?*" Bilder" ]] && rm -rf -- "$3"
+  done
+  (( rc == 3 )) && rc=0             # twice: what it read is still worth keeping
+  return rc
+}
+_extract_once() {
   local line fd what=Seite
   local -a w
-  local -i more rc=1
+  local -i more rc=1 pid
+  local -F seen=$EPOCHREALTIME
   case ${(L)1:e} in pptx|pptm|ppsx|potx) what=Folie ;; xlsx|xlsm|xltx) what=Blatt ;; esac
   SC_ERR= _BG_BUF=
-  exec {fd}< <($SC_BIN $1 $2 </dev/null 2>/dev/null; print -r -- "SC-EXIT $?")
+  # $! does not see a process substitution: the extractor's number comes first, as a line
+  exec {fd}< <($SC_BIN $1 $2 ${3:+"$3"} </dev/null 2>/dev/null & print -r -- "SC-PID $!"; wait $!; print -r -- "SC-EXIT $?")
   while :; do
     bg_read_lines $fd 0.08; more=$?
+    (( ${#reply} )) && seen=$EPOCHREALTIME
+    if (( EPOCHREALTIME - seen > 600 )); then
+      (( pid )) && kill $pid 2>/dev/null; SC_ERR="die Texterkennung antwortet nicht"; rc=1; break
+    fi
     for line in $reply; do
       case $line in
+        SC-PID\ <->)  pid=${line#* } ;;
         SC-EXIT\ <->) rc=${line#* } ;;
         page\ <->\ <->) w=(${=line}); (( w[3] > 1 )) && bg_ui_note "$what $w[2] von $w[3]" ;;
         error\ *) SC_ERR=${line#error } ;;
@@ -337,6 +361,10 @@ clean_unit() {   # <i> <file name> → SC_UT[i]
       math) how="aus einem PDF – die Formeln können zerrissen sein" ;;
       *)    how="aus dem Dokument" ;;
     esac
+    # the pictures stay out of the AI's way: before the text of a scan, after the text otherwise
+    local -a all=("${(@f)text}")
+    local -a pics=("${(@M)all:#$GS*}") rest=("${(@)all:#$GS*}")
+    text=${(F)rest}
     chunks $text $limit
     local -a parts=("${reply[@]}")
     for (( p = 1; p <= ${#parts}; p++ )); do
@@ -345,6 +373,9 @@ clean_unit() {   # <i> <file name> → SC_UT[i]
       if ask_ai "$where, $how:"$'\n\n'"$part" && kept $part $REPLY; then out+=${out:+$'\n'}$REPLY
       else (( SC_STOP )) && return 1; out+=${out:+$'\n'}$part; fi
     done
+    if (( ${#pics} )); then
+      if [[ $kind == ocr ]]; then out=${(F)pics}$N$N$out; else out+=$N$N${(F)pics}; fi
+    fi
     SC_UT[i]=$out
     return 0
   fi
@@ -353,6 +384,7 @@ clean_unit() {   # <i> <file name> → SC_UT[i]
   local -a lines=("${(@f)text}") kept_lines=() around=()
   local -i inside=0
   for line in $lines; do
+    [[ $line == $GS* ]] && continue
     if [[ $line == '[Bildtext]' ]]; then inside=1
     elif (( inside )); then [[ -z $line ]] && inside=0
     else around+=("$line"); fi
@@ -383,14 +415,41 @@ Keep only what someone learning this needs: code, commands, formulas, values, er
 
 # ── Making the text ───────────────────────────────────────────
 
-# The Markdown of one file from SC_UL/SC_UK/SC_UT → REPLY
+# A path for a Markdown link → REPLY
+enc() {
+  local p=${1//\%/%25}
+  p=${p// /%20}; p=${p//\(/%28}; p=${p//\)/%29}; p=${p//\#/%23}; p=${p//\?/%3F}; p=${p//\[/%5B}; p=${p//\]/%5D}
+  REPLY=$p
+}
+
+# The pictures of one file go again – before it is converted anew, when it is gone or cannot be read
+drop_pictures() {   # <output folder> <subject> <path in the subject>
+  local p="$1/$2/$3 Bilder"
+  [[ -n $1 && -n $2 && -n $3 && -d $p ]] && rm -rf -- "$p"
+  return 0
+}
+
+# The Markdown of one file from SC_UL/SC_UK/SC_UT → REPLY. Its pictures are linked from the folder next to it.
 compose() {   # <path in the subject>
   local -i i
-  local mark out="# Datei: $1"
+  local mark out="# Datei: $1" line pics
+  enc "${1:t} Bilder"; pics=$REPLY
   for (( i = 1; i <= ${#SC_UT}; i++ )); do
+    if [[ $SC_UT[i] == *$GS* ]]; then
+      local -a ls=()
+      for line in "${(@f)SC_UT[i]}"; do
+        [[ $line == $GS* ]] && line="![${line##*$GS}]($pics/${${line#$GS}%%$GS*})"
+        ls+=("$line")
+      done
+      SC_UT[i]=${(F)ls}
+    fi
     mark=$SC_UL[i]
-    if [[ $SC_UK[i] == ocr ]]; then
-      if [[ ${(L)1:e} == (png|jpg|jpeg|heic|heif|tif|tiff|gif|bmp|webp) ]]; then mark=Bildtext; else mark="${mark:+$mark · }Scan"; fi
+    if [[ $SC_UK[i] == ocr && ${(L)1:e} == (png|jpg|jpeg|heic|heif|tif|tiff|gif|bmp|webp) ]]; then
+      # a photo: the picture, then what was read from it
+      if [[ $SC_UT[i] == '![Bild'*$N* ]]; then SC_UT[i]="${SC_UT[i]%%$N*}${N}[Bildtext]$N${${SC_UT[i]#*$N}##$N#}"
+      else SC_UT[i]="[Bildtext]$N${SC_UT[i]}"; fi
+    elif [[ $SC_UK[i] == ocr ]]; then
+      mark="${mark:+$mark · }Scan"
     fi
     out+="$N${mark:+[$mark]$N}$SC_UT[i]"
     (( i < ${#SC_UT} )) && out+=$'\n'
@@ -403,11 +462,19 @@ combine() {   # <subject>
   local k body= md date
   local -i n=0
   outdir; local out=$REPLY
+  local text prefix
   for k in ${(ko)SC_M}; do
     [[ ${SC_M[$k]##* } == -1 ]] && continue
     md="$out/$1/$k.md"
     [[ -r $md ]] || continue
-    body+=$(<$md)$'\n\n'
+    text=$(<$md)
+    # the pictures are next to the file's .md: from here they are in the subject's folder
+    if [[ $text == *'![Bild'* ]]; then
+      if [[ $k == */* ]]; then enc "$1/${k:h}/"; else enc "$1/"; fi
+      prefix=$REPLY
+      text=${text//(#b)\!\[Bild([^\]]#)\]\(/![Bild${match[1]}](${prefix}}
+    fi
+    body+=$text$'\n\n'
     (( n++ ))
   done
   if (( ! n )); then rm -f -- "$out/$1.md"; return 0; fi
@@ -416,7 +483,7 @@ combine() {   # <subject>
   files_word $n
   print -r -- "# Fach: $1
 Scriba · $date · $REPLY · $tok
-Marken: [S. n] Seite · [Folie n] · [Blatt …] Excel-Blatt · [Scan] aus einem Scan gelesen · [Bildtext] Text aus einem Bild · [?] unleserlich · Formeln in LaTeX
+Marken: [S. n] Seite · [Folie n] · [Blatt …] Excel-Blatt · [Scan] aus einem Scan gelesen · ![Bild …] ein Bild · [Bildtext] Text aus einem Bild · [?] unleserlich · Formeln in LaTeX
 
 ${body%$N$N}" >| "$out/$1.md"
 }
@@ -464,10 +531,14 @@ convert() {   # [--neu] <subject…>
     man_load $s
     local -A st=()
     zstat -H st -- $src 2>/dev/null
-    if ! extract $src $SC_TMP/units; then
+    drop_pictures $out $s $rel
+    local pics=
+    [[ $SC_IMG == yes ]] && pics="$out/$s/$rel Bilder"
+    if ! extract $src $SC_TMP/units $pics; then
       (( SC_STOP )) && break
       errs+=("${rel:t}: $SC_ERR"); (( fails++ ))
       rm -f -- "$out/$s/$rel.md"                       # an older version would be out of date
+      drop_pictures $out $s $rel
       SC_M[$rel]="$st[size] $st[mtime] -1"
       man_save $s
       continue
@@ -498,6 +569,7 @@ convert() {   # [--neu] <subject…>
     man_load $s
     for rel in ${(ps:$US:)gone_of[$s]}; do
       rm -f -- "$out/$s/$rel.md"
+      drop_pictures $out $s $rel
       unset "SC_M[$rel]"
     done
     [[ -n ${gone_of[$s]} ]] && { man_save $s; find "$out/$s" -type d -empty -delete 2>/dev/null }
@@ -791,13 +863,14 @@ done_msg() {   # <subjects that were converted…>
 
 # Settings: one list, Enter changes the one under the arrow → REPLY: "list", "drop" or "quit"
 settings_screen() {
-  local -i sel=${1:-1} i y n=7 py
-  local -a labels=("Schulordner" "Ausgabe" "KI" "KI liest" "Ausbildung" "Lehrjahr" "Neu umwandeln")
+  local -i sel=${1:-1} i y n=8 py
+  local -a labels=("Schulordner" "Ausgabe" "KI" "KI liest" "Bilder" "Ausbildung" "Lehrjahr" "Neu umwandeln")
   local -a about=(
     "Der Ordner mit deinen Fächern – ein Unterordner pro Fach. ⏎ und einen anderen hierher ziehen."
     "Hier landen die Texte: pro Fach eine Datei mit allem (für Claude) und ein Ordner mit jeder Datei einzeln."
     "Räumt Text aus Scans, Bildern und Formeln auf – auf diesem Mac, nichts wird hochgeladen. ⏎ wechselt."
     "Scans, Bilder, Formeln: nur wo es hilft, schnell. Jede Seite: sauberer, dauert aber viel länger."
+    "Bilder aus deinen Unterlagen stehen in den .md-Dateien – zu sehen in VS Code, Obsidian oder auf GitHub. Claude liest den Text darin. Gilt fürs nächste Umwandeln."
     "Steht im Coach-Prompt für Claude (p in den Fächern kopiert ihn)."
     "Steht im Coach-Prompt für Claude."
     "Wandelt alle Fächer noch einmal ganz um – zum Beispiel nach einer anderen KI-Einstellung.")
@@ -818,9 +891,10 @@ settings_screen() {
              *)    val=$SC_AI_LABEL ;;
            esac ;;
         4) [[ $SC_FOR == all ]] && val="jede Seite" || val="Scans, Bilder, Formeln" ;;
-        5) val=$SC_JOB ;;
-        6) val="$SC_YEAR. Lehrjahr" ;;
-        7) val="${d}alle Fächer${x}" ;;
+        5) [[ $SC_IMG == yes ]] && val="zeigen" || val="${d}weglassen${x}" ;;
+        6) val=$SC_JOB ;;
+        7) val="$SC_YEAR. Lehrjahr" ;;
+        8) val="${d}alle Fächer${x}" ;;
       esac
       if (( i == sel )); then at $y 5 "${a}›${x} ${B}${(r:14:)labels[i]}${x} $val"
       else at $y 5 "  ${(r:14:)labels[i]} $val"; fi
@@ -841,18 +915,18 @@ settings_screen() {
       enter|space)
         case $sel in
           1) REPLY=drop; return ;;
-          2|5)
+          2|6)
             ask="Zieh einen Ordner hierher – ⏎ allein: neben dem Schulordner"
-            (( sel == 5 )) && ask="Deine Ausbildung, z. B. Informatiker/in EFZ, Fachrichtung Plattformentwicklung"
+            (( sel == 6 )) && ask="Deine Ausbildung, z. B. Informatiker/in EFZ, Fachrichtung Plattformentwicklung"
             at $py 5 $'\e[2K'"${a}${ask}${x}"
             at $(( py + 3 )) 1 $'\e[2K'
             print -n $'\e[?25h'
             at $(( py + 1 )) 1 ""
             line=
-            (( sel == 5 )) && line=$SC_JOB
+            (( sel == 6 )) && line=$SC_JOB
             vared -p "    %{$a%}›%{$x%} " line
             print -n $'\e[?25l'
-            if (( sel == 5 )); then
+            if (( sel == 6 )); then
               [[ -n ${line//[[:space:]]/} ]] && { SC_JOB=${${line##[[:space:]]#}%%[[:space:]]#}; save }
             elif [[ -z ${line//[[:space:]]/} ]]; then SC_OUT=; save
             else
@@ -862,8 +936,9 @@ settings_screen() {
             fi ;;
           3) ai_next; ai_resolve ;;
           4) [[ $SC_FOR == all ]] && SC_FOR=auto || SC_FOR=all; save ;;
-          6) (( SC_YEAR = SC_YEAR % 4 + 1 )); save ;;
-          7) [[ -n $SC_ROOT ]] && subjects && { convert --neu $SC_SUBJ; done_msg $SC_SUBJ; REPLY=list; return }
+          5) [[ $SC_IMG == yes ]] && SC_IMG=no || SC_IMG=yes; save ;;
+          7) (( SC_YEAR = SC_YEAR % 4 + 1 )); save ;;
+          8) [[ -n $SC_ROOT ]] && subjects && { convert --neu $SC_SUBJ; done_msg $SC_SUBJ; REPLY=list; return }
              SC_MSG="${r}Zuerst einen Schulordner wählen.${x}" ;;
         esac ;;
     esac
