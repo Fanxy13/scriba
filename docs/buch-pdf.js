@@ -39,7 +39,8 @@ f.src = url;
 document.body.appendChild(f);
 });
 
-// the content of a page, without navigation, menus and buttons → HTML
+// the content of a page, without navigation, menus, buttons and the links to the page before and after → HTML
+const PAGER = /^([‹«←❮◀]\s*)?(zurück|vorherige?s?|previous|prev|back|weiter|nächste?s?|naechste|next|suivant|précédent|avanti|indietro)(?=$|\s|[›»→❯:])|^[‹«←❮›»→❯▶◀]+$/i;
 const JUNK = /(^|[\s_-])(nav|navbar|navigation|menu|sidebar|breadcrumbs?|footer|cookie|banner|toolbar|pagination|share|skip)([\s_-]|$)/i;
 const pick = (doc, sel) => {
 for (const s of sel || ['.book_content', 'main article', 'article', 'main', '[role=main]', '#region-main', '#content', '.content', '#main']) {
@@ -64,7 +65,8 @@ i.removeAttribute('loading');
 });
 c.querySelectorAll('source').forEach(s => s.remove());
 c.querySelectorAll('a[href]').forEach(a => {
-if (/^[¶#§🔗]?$/.test(a.textContent.trim()) && !a.querySelector('img')) a.remove();
+const t = a.textContent.trim();
+if ((/^[¶#§🔗]?$/.test(t) && !a.querySelector('img')) || (t.length < 40 && PAGER.test(t))) a.remove();
 else a.setAttribute('href', a.href);
 });
 c.querySelectorAll('canvas').forEach(e => e.remove());
@@ -72,7 +74,7 @@ return c.innerHTML;
 }).join('\n');
 
 // the next page: rel=next, or a link that says "Weiter", "Nächste", "Next", "»" …
-const WORD = /^\s*(weiter|nächste|naechste|next|suivant|avanti|continue)\b|[›»→]\s*$/i;
+const WORD = /^\s*(weiter|nächste|naechste|next|suivant|avanti|continue)(?=$|\s|[›»→❯:])|[›»→❯]\s*$/i;
 const HINT = /(^|[\s_-])(next|weiter|naechste|nächste)([\s_-]|$)/i;
 const nextOf = (doc, url, seen) => {
 const ok = h => {
