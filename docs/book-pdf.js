@@ -198,13 +198,31 @@ if (document.contentType === 'application/pdf' || window.PDFViewerApplication) {
 explain('This is a PDF already – open it and save it (⌘S).');
 return;
 }
-// OneNote for the web on its own in the tab: every section and every page, clicked through like a person would
+// OneNote for the web on its own in the tab. It asks what to save – the content library, one section group, or all
+// of it – then opens group after group and clicks through every section and page like a person would. Pictures of
+// printouts (a Word file or PDF put into OneNote) load only when they are in view: it scrolls to each one first.
 const inOneNote = document.getElementById('NavPaneSectionList') && document.getElementById('WACViewPanel');
 const oneNote = async () => {
 const out = [];
-const items = id => [...document.querySelectorAll('#' + id + ' [role=treeitem]')];
-const name = e => (e.innerText || e.textContent || '').trim().split('\n')[0].trim();
-const view = () => document.getElementById('WACViewPanel_EditingElement') || document.getElementById('WACViewPanel');
+const T = e => (e.innerText || e.textContent || '').trim().split('\n')[0].trim();
+const sections = () => [...document.querySelectorAll('#NavPaneSectionList [role=treeitem]')];
+const isGroup = e => e.hasAttribute('aria-expanded') || /section group|abschnittsgruppe/i.test(e.getAttribute('aria-label') || '');
+// the sections of a group sit in a [role=group] right after the group's own entry (or inside it)
+const parentOf = e => {
+const g = e.parentElement && e.parentElement.closest('[role=group]');
+if (g && g.closest('#NavPaneSectionList')) {
+const before = g.previousElementSibling;
+if (before && before.matches('[role=treeitem]')) return before;
+const around = g.parentElement && g.parentElement.closest('[role=treeitem]');
+if (around) return around;
+}
+return e.parentElement && e.parentElement.closest('[role=treeitem]');
+};
+const pathOf = e => { const n = []; for (let x = e; x; x = parentOf(x)) n.unshift(T(x)); return n.join(' › '); };
+const byPath = p => sections().find(e => pathOf(e) === p);
+const pages = () => { const n = [...document.querySelectorAll('#PageList .pageNode')]; return n.length ? n : [...document.querySelectorAll('#PageList [role=treeitem]')]; };
+const view = () => document.getElementById('PageContentContainer') || document.getElementById('WACViewPanel');
+const titleNow = () => { const t = document.querySelector('#PageContentContainer .Title'); return t ? t.innerText.trim() : ''; };
 // until nothing changes for a moment: OneNote builds a page in steps
 const quiet = async (get, ms = 900) => {
 let last = '', same = 0;
@@ -215,48 +233,84 @@ same = now === last ? same + 1 : 0;
 last = now;
 }
 };
-// a page as HTML: ink (canvas) and pictures that only live in this tab (blob:, this site) as data
-const page = async (el, where) => {
-const c = el.cloneNode(true);
-const drawn = [...el.querySelectorAll('canvas')], copies = [...c.querySelectorAll('canvas')];
-drawn.forEach((cv, i) => { try { const img = document.createElement('img'); img.src = cv.toDataURL(); copies[i].replaceWith(img); } catch (e) {} });
-for (const img of c.querySelectorAll('img')) {
-const src = img.getAttribute('src') || '';
-if (!/^blob:|^\/(?!\/)/.test(src) && !src.startsWith(location.origin)) continue;
-try {
-const b = await (await fetch(new URL(src, location.href), { credentials: 'include' })).blob();
-img.src = await new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(b); });
-} catch (e) {}
-}
-c.querySelectorAll('[contenteditable]').forEach(e => e.removeAttribute('contenteditable'));
-tidy(c, location.href);
-return '<p class="buch-pdf-where">' + esc(where) + '</p>' + c.innerHTML;
+// what to save: the parts at the top of the notebook, or all of it
+const top = sections().filter(e => !parentOf(e));
+const choice = await new Promise(done => {
+const msg = box.children[1];
+msg.textContent = 'What should I save?';
+msg.style.cssText = 'all:initial;font:inherit;color:inherit;display:block';
+const offer = (label, value, strong) => {
+const b = document.createElement('button');
+b.textContent = label;
+b.style.cssText = 'all:initial;font:inherit;display:block;margin-top:7px;padding:6px 10px;border-radius:8px;cursor:pointer;color:' + (strong ? '#111;background:#f8b8d0' : '#eef2ee;background:#1d2428');
+b.onclick = () => done(value);
+msg.append(b);
 };
-const done = new Set();
-for (let round = 0; round < 500 && !stop; round++) {
-const sec = items('NavPaneSectionList').find(e => !done.has(name(e) + '|' + (e.getAttribute('aria-level') || '')));
-if (!sec) break;
-const secName = name(sec);
-done.add(secName + '|' + (sec.getAttribute('aria-level') || ''));
-say('Section ' + done.size + ' · ' + secName);
-const before = items('PageList').map(name).join('|');
+const lib = top.find(e => /inhaltsbibliothek|content library|bibliothèque|biblioteca/i.test(T(e)));
+if (lib) offer(T(lib), pathOf(lib), true);
+top.filter(e => e !== lib).forEach(e => offer(T(e), pathOf(e)));
+offer('All of it', '*');
+const close = box.children[2].onclick;
+box.children[2].onclick = () => { close(); done(null); };
+});
+if (!choice) { stop = true; return out; }
+window.__buchPdfChoice = choice;
+// the sections to save, groups opened (also groups inside groups)
+const list = [];
+const collect = async p => {
+const e = byPath(p);
+if (!e) return;
+if (!isGroup(e)) { list.push(p); return; }
+if (e.getAttribute('aria-expanded') !== 'true') { e.click(); await quiet(() => document.getElementById('NavPaneSectionList')); }
+const g = byPath(p);
+for (const k of sections().filter(k => parentOf(k) === g).map(pathOf)) await collect(k);
+};
+for (const p of choice === '*' ? top.map(pathOf) : [choice]) await collect(p);
+for (let s = 0; s < list.length && !stop; s++) {
+const sec = byPath(list[s]);
+if (!sec) continue;
+say('Section ' + (s + 1) + ' / ' + list.length + ' · ' + T(sec));
 sec.click();
 await quiet(() => document.getElementById('PageList'));
-// a section group only opens and shows its sections: they come in the next rounds
-if (round > 0 && sec.hasAttribute('aria-expanded') && items('PageList').map(name).join('|') === before) continue;
-const n = items('PageList').length;
+const n = pages().length;
 for (let p = 0; p < n && !stop; p++) {
-const it = items('PageList')[p];
+const it = pages()[p];
 if (!it) break;
-const was = view() ? view().textContent : '';
-it.click();
-for (let t = 0; t < 60 && view() && view().textContent === was && !stop; t++) await sleep(150);
+const was = titleNow();
+(it.querySelector('[role=button]') || it).click();
+for (let t = 0; t < 40 && titleNow() === was && !stop; t++) await sleep(150);
 await quiet(view);
-say('Section ' + done.size + ' · page ' + (p + 1) + ' / ' + n);
-if (view()) out.push(await page(view(), secName + ' › ' + name(it)));
+say('Section ' + (s + 1) + ' / ' + list.length + ' · page ' + (p + 1) + ' / ' + n);
+// printouts: scroll to each picture until it is there
+const v = view();
+if (!v) continue;
+for (const img of [...v.querySelectorAll('img')]) {
+if (img.closest('.OutlineResizeHandleContainer') || (img.complete && img.naturalWidth)) continue;
+(img.closest('.WACImageContainer') || img).scrollIntoView({ block: 'center' });
+for (let t = 0; t < 40 && !(img.complete && img.naturalWidth) && !stop; t++) await sleep(150);
+}
+out.push(await page(v, T(sec) + ' › ' + (titleNow().split('\n')[0] || T(it))));
 }
 }
 return out;
+};
+// a OneNote page as HTML: pictures as data (blob: lives only in this tab), no OneNote handles, icons and sizes
+const page = async (el, where) => {
+const c = el.cloneNode(true);
+const orig = [...el.querySelectorAll('img')], copies = [...c.querySelectorAll('img')];
+for (let i = 0; i < copies.length; i++) {
+const o = orig[i], k = copies[i], src = k.getAttribute('src') || '';
+if (!src || k.closest('.OutlineResizeHandleContainer') || /onecdn\.static|static\.microsoft/.test(src) || (o && o.naturalWidth && o.naturalWidth < 48)) { k.remove(); continue; }
+if (!/^blob:/.test(src)) continue;
+try {
+const b = await (await fetch(src)).blob();
+k.src = await new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(b); });
+} catch (e) {}
+}
+c.querySelectorAll('[contenteditable]').forEach(e => e.removeAttribute('contenteditable'));
+c.querySelectorAll('[style]').forEach(e => { for (const p of ['width', 'min-width', 'max-width', 'margin-left']) e.style.removeProperty(p); });
+tidy(c, location.href);
+return '<p class="buch-pdf-where">' + esc(where) + '</p>' + c.innerHTML;
 };
 let title = document.title, parts = [], breaks = false;
 try {
@@ -266,6 +320,7 @@ if (inOneNote) {
 const head = document.getElementById('AppHeaderPanel');
 title = (head && head.innerText.trim().split('\n')[0]) || title;
 parts = await oneNote();
+if (window.__buchPdfChoice && window.__buchPdfChoice !== '*') title = window.__buchPdfChoice.split(' › ').pop().replace(/^_/, '') + ' – ' + title;
 breaks = true;
 if (!parts.length && !stop) { explain('No pages found in this notebook.'); return; }
 } else if (moodle && id) {
