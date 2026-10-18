@@ -1,6 +1,6 @@
-// Buch → PDF – a bookmarklet of Scriba: a book made of web pages becomes one page, then the browser's "Print"
+// Book → PDF – a bookmarklet of Scriba: a book made of web pages becomes one page, then the browser's "Print"
 // opens – "Save as PDF" there. Moodle books: their own print view · mdBook and others with "Print this book": that page · otherwise page after page
-// along "Weiter", "Next" or rel=next (same site only, at most 500 pages). Protected e-book readers stay as they are.
+// along "Next", "Weiter" or rel=next (same site only, at most 500 pages). Protected e-book readers stay as they are.
 // docs/index.html turns this file into the bookmark: full-line comments go, the rest is the code.
 (async () => {
 if (window.__buchPdf) return;
@@ -9,7 +9,7 @@ const MAX = window.__buchPdfMax || 500;
 const box = document.createElement('div');
 box.id = 'buch-pdf-box';
 box.style.cssText = 'all:initial;position:fixed;z-index:2147483647;top:16px;right:16px;display:flex;gap:12px;align-items:center;padding:12px 16px;border-radius:14px;background:#0b0f12;color:#eef2ee;font:14px/1.4 -apple-system,system-ui,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.35)';
-box.innerHTML = '<b style="color:#f8b8d0;font-weight:600">Buch → PDF</b><span>…</span><button title="Abbrechen" style="all:unset;cursor:pointer;opacity:.6;padding:0 2px">✕</button>';
+box.innerHTML = '<b style="color:#f8b8d0;font-weight:600">Book → PDF</b><span>…</span><button title="Cancel" style="all:unset;cursor:pointer;opacity:.6;padding:0 2px">✕</button>';
 let stop = false;
 const say = t => { box.children[1].textContent = t; };
 box.children[2].onclick = () => { stop = true; box.remove(); window.__buchPdf = 0; };
@@ -103,12 +103,12 @@ try {
 const moodle = location.pathname.match(/^(.*)\/mod\/book\/(view\.php|tool\/print\/index\.php)$/);
 const id = new URLSearchParams(location.search).get('id');
 if (moodle && id) {
-say('Moodle-Buch …');
+say('Moodle book …');
 const d = moodle[2] === 'view.php' ? await fetchDoc(location.origin + moodle[1] + '/mod/book/tool/print/index.php?id=' + id) : document;
 title = d.title || title;
 parts.push(html(d, ['.book_summary, .book_chapter', '[role=main]', '#region-main']));
 } else if (printLink) {
-say('Ganzes Buch …');
+say('Whole book …');
 const d = await fetchDoc(printLink.href);
 title = d.title || title;
 parts.push(html(d));
@@ -120,7 +120,7 @@ while (parts.length < MAX && !stop) {
 const next = nextOf(doc, url, seen);
 if (!next) break;
 seen.add(next);
-say('Seite ' + (parts.length + 1) + ' …');
+say('Page ' + (parts.length + 1) + ' …');
 let d = await fetchDoc(next), body = html(d);
 if (body.replace(/<[^>]*>/g, '').trim().length < 100) {
 const [fd, frame] = await frameDoc(next);
@@ -134,7 +134,7 @@ await sleep(150);
 }
 }
 } catch (e) {
-say('Fehler: ' + e.message + ' – drucke, was da ist');
+say('Error: ' + e.message + ' – printing what is there');
 await sleep(1500);
 }
 if (stop) return;
@@ -145,7 +145,7 @@ const css = 'body{font:15px/1.6 -apple-system,"Segoe UI",system-ui,sans-serif;co
 + 'code{font-family:ui-monospace,Menlo,monospace;font-size:.92em}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #ccc;padding:4px 7px;vertical-align:top}'
 + '.buch-pdf-page+.buch-pdf-page{border-top:1px solid #ddd;margin-top:30px;padding-top:14px}a{color:inherit}'
 + '@page{margin:16mm}@media print{body{padding:0;max-width:none}h1,h2,h3,h4{break-after:avoid}img,pre,table,figure{break-inside:avoid}}';
-const n = parts.length, lang = document.documentElement.lang || 'de';
+const n = parts.length, lang = document.documentElement.lang || 'en';
 document.open();
 document.write('<!doctype html><html lang="' + esc(lang) + '"><head><meta charset="utf-8"><title>' + esc(title) + '</title><style>' + css + '</style></head><body>'
 + parts.map(p => '<div class="buch-pdf-page">' + p + '</div>').join('\n') + '</body></html>');

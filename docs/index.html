@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Buch → PDF</title>
-  <meta name="description" content="Ein Lesezeichen: das ganze Buch als PDF – Moodle-Buch, Online-Skripte, Dokus. Von Scriba.">
+  <title>Book → PDF</title>
+  <meta name="description" content="A bookmark that saves a whole online book as a PDF – Moodle books, course notes, docs. By Scriba.">
   <meta name="theme-color" content="#05070a">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2305070a'/%3E%3Cpath d='M9 8h11a3 3 0 0 1 3 3v13H12a3 3 0 0 1-3-3z' fill='none' stroke='%23f8b8d0' stroke-width='2.2'/%3E%3Cpath d='M12 24a3 3 0 0 1 0-6h11' fill='none' stroke='%23b5d371' stroke-width='2.2'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -88,30 +88,30 @@
 <body>
   <main>
     <a class="brand" href="https://github.com/Fanxy13/scriba"><i>◇</i> <b>scriba</b></a>
-    <h1>Buch <span>→</span> PDF</h1>
-    <p class="lead">Ein Klick, und das ganze Buch ist ein PDF.</p>
+    <h1>Book <span>→</span> PDF</h1>
+    <p class="lead">One click, and the whole book is a PDF.</p>
 
-    <a class="grab" id="grab" href="#" aria-label="Buch → PDF – in die Lesezeichenleiste ziehen" draggable="true">
+    <a class="grab" id="grab" href="#" aria-label="Book → PDF – drag it to your bookmarks bar" draggable="true">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>
-      Buch → PDF
+      Book → PDF
     </a>
-    <p class="hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg> in die Lesezeichenleiste ziehen</p>
+    <p class="hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg> drag it to your bookmarks bar</p>
 
     <ol>
-      <li><b>1</b>Hochziehen</li>
-      <li><b>2</b>Im Buch klicken</li>
-      <li><b>3</b>«Als PDF sichern»</li>
+      <li><b>1</b>Drag it up</li>
+      <li><b>2</b>Click it in the book</li>
+      <li><b>3</b>“Save as PDF”</li>
     </ol>
 
-    <p class="note">Für Bücher aus Webseiten: Moodle-Buch, Online-Skripte, Dokus. Keine Leiste? <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>B</kbd></p>
-    <footer>Gehört zu <a href="https://github.com/Fanxy13/scriba">Scriba</a> · <a href="buch-pdf.js">Code</a></footer>
+    <p class="note">For books made of web pages: Moodle books, course notes, docs. No bookmarks bar? <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>B</kbd></p>
+    <footer>Part of <a href="https://github.com/Fanxy13/scriba">Scriba</a> · <a href="book-pdf.js">Code</a></footer>
   </main>
-  <div class="toast" id="toast" role="status">Nicht klicken – nach oben in die Lesezeichenleiste ziehen</div>
+  <div class="toast" id="toast" role="status">Don’t click it – drag it up to your bookmarks bar</div>
 
   <script>
-    // the bookmark is built from buch-pdf.js: its full-line comments go, the rest is the code
+    // the bookmark is built from book-pdf.js: its full-line comments go, the rest is the code
     const grab = document.getElementById('grab'), toast = document.getElementById('toast');
-    fetch('buch-pdf.js').then(r => r.text()).then(src => {
+    fetch('book-pdf.js').then(r => r.text()).then(src => {
       const code = src.split('\n').filter(l => l.trim() && !l.trim().startsWith('//')).join('\n');
       grab.href = 'javascript:' + encodeURIComponent(code);
     });
