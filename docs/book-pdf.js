@@ -2,13 +2,13 @@
 // opens – "Save as PDF" there. Moodle books: their own print view · mdBook and others with "Print this book": that page · otherwise page after page
 // along "Next", "Weiter" or rel=next (same site only, at most 500 pages). Protected e-book readers stay as they are.
 // docs/index.html turns this file into the bookmark: full-line comments go, the rest is the code.
-(async () => {
+void (async () => {
 if (window.__buchPdf) return;
 window.__buchPdf = 1;
 const MAX = window.__buchPdfMax || 500;
 const box = document.createElement('div');
 box.id = 'buch-pdf-box';
-box.style.cssText = 'all:initial;position:fixed;z-index:2147483647;top:16px;right:16px;display:flex;gap:12px;align-items:center;padding:12px 16px;border-radius:14px;background:#0b0f12;color:#eef2ee;font:14px/1.4 -apple-system,system-ui,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.35)';
+box.style.cssText = 'all:initial;position:fixed;z-index:2147483647;top:16px;right:16px;max-width:380px;display:flex;gap:12px;align-items:center;padding:12px 16px;border-radius:14px;background:#0b0f12;color:#eef2ee;font:14px/1.4 -apple-system,system-ui,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.35)';
 box.innerHTML = '<b style="color:#f8b8d0;font-weight:600">Book → PDF</b><span>…</span><button title="Cancel" style="all:unset;cursor:pointer;opacity:.6;padding:0 2px">✕</button>';
 let stop = false;
 const say = t => { box.children[1].textContent = t; };
@@ -49,9 +49,40 @@ if (all.length && all.reduce((n, e) => n + e.textContent.trim().length, 0) > 200
 }
 return [doc.body];
 };
-const html = (doc, sel) => pick(doc, sel).map(root => {
+const isPdf = e => { const s = e.getAttribute('src') || e.getAttribute('data') || ''; return s && (/\.pdf([?#]|$)/i.test(s) || /pdf/i.test(e.getAttribute('type') || '')); };
+const html = (doc, sel, depth = 0) => pick(doc, sel).map(root => {
 const c = root.cloneNode(true);
-c.querySelectorAll('script,style,noscript,template,nav,aside,form,button,iframe,dialog,#buch-pdf-box,[role=navigation],[role=banner],[role=contentinfo]').forEach(e => e.remove());
+// what frames of the same site and shadow DOM show goes into the copy, before anything is taken out
+const orig = [root, ...root.querySelectorAll('*')], copy = [c, ...c.querySelectorAll('*')];
+orig.forEach((e, i) => {
+const k = copy[i];
+if (!k) return;
+if (e.tagName === 'IFRAME' && depth < 2 && !isPdf(e)) {
+let d = null;
+try { d = e.contentDocument; } catch (err) {}
+if (d && d.body && d.body.textContent.trim().length > 40) { const div = document.createElement('div'); div.innerHTML = html(d, null, depth + 1); k.replaceWith(div); }
+} else if (e.shadowRoot && e.shadowRoot.textContent.trim().length > e.textContent.trim().length) {
+k.innerHTML = e.shadowRoot.innerHTML;
+}
+});
+// a PDF shown in the page prints as an empty box: a link to it instead
+c.querySelectorAll('iframe,embed,object').forEach(e => {
+if (!isPdf(e)) return;
+const u = new URL(e.getAttribute('src') || e.getAttribute('data'), doc.baseURI);
+const p = document.createElement('p');
+const a = document.createElement('a');
+a.href = u.href;
+a.textContent = 'PDF: ' + decodeURIComponent(u.pathname.split('/').pop() || u.href);
+p.append('📄 ', a);
+e.replaceWith(p);
+});
+c.querySelectorAll('script,style,noscript,template,nav,aside,form,button,iframe,embed,object,dialog,#buch-pdf-box,[role=navigation],[role=banner],[role=contentinfo]').forEach(e => e.remove());
+// custom elements of the site would build themselves again on the printed page: plain blocks instead
+[...c.querySelectorAll('*')].filter(e => e.tagName.includes('-')).forEach(e => { const d = document.createElement('div'); d.append(...e.childNodes); e.replaceWith(d); });
+// colors, sizes and positions of the site would make text white, cut or stacked on paper
+c.querySelectorAll('[style]').forEach(e => {
+for (const p of ['color', 'background', 'background-color', 'background-image', 'opacity', 'filter', '-webkit-text-fill-color', 'mix-blend-mode', 'position', 'top', 'left', 'right', 'bottom', 'transform', 'z-index', 'height', 'max-height', 'overflow', 'overflow-y', 'columns', 'column-count']) e.style.removeProperty(p);
+});
 c.querySelectorAll('[class],[id]').forEach(e => {
 if (JUNK.test((e.className && e.className.baseVal === undefined ? e.className : '') + ' ' + e.id) && e.textContent.trim().length < 400) e.remove();
 });
@@ -98,6 +129,45 @@ return null;
 // a page with the whole book, like mdBook's print.html ("Print this book")
 const printLink = [...document.querySelectorAll('a[href]')].find(a => a.origin === location.origin
 && (/(^|\/)print\.html$/.test(a.pathname) || /print this book|ganzes buch drucken/i.test((a.title || '') + ' ' + (a.getAttribute('aria-label') || ''))));
+// nothing to put together: say why instead of printing an empty page
+const explain = why => {
+const msg = box.children[1];
+msg.textContent = why;
+msg.style.cssText = 'all:initial;font:inherit;color:inherit;display:block';
+pdfs().slice(0, 3).forEach(u => {
+const a = document.createElement('a');
+a.href = u;
+a.target = '_blank';
+a.textContent = 'Open the PDF ↗';
+a.style.cssText = 'all:initial;font:inherit;display:block;margin-top:6px;color:#b5d371;cursor:pointer;text-decoration:underline';
+msg.append(a);
+});
+window.__buchPdf = 0;
+window.__buchPdfInfo = why;
+};
+const pdfs = () => {
+const list = [];
+if (document.contentType === 'application/pdf') list.push(location.href);
+if (window.PDFViewerApplication && window.PDFViewerApplication.url) list.push(new URL(window.PDFViewerApplication.url, location.href).href);
+document.querySelectorAll('iframe,embed,object').forEach(e => { if (isPdf(e)) list.push(new URL(e.getAttribute('src') || e.getAttribute('data'), location.href).href); });
+return [...new Set(list)];
+};
+const drawn = () => [...document.querySelectorAll('canvas')].some(c => c.offsetWidth * c.offsetHeight > 150000)
+|| [...document.querySelectorAll('iframe')].some(f => { let d = null; try { d = f.contentDocument; } catch (e) {} return !d && f.offsetWidth * f.offsetHeight > 150000; });
+if (/(^|\.)fanxy13\.github\.io$/.test(location.hostname) && location.pathname.startsWith('/scriba')) {
+explain('Open a book first – then click the bookmark there.');
+return;
+}
+// OneNote for the web keeps the notebook in a frame of another Microsoft site: a bookmark cannot look into it
+const oneNoteFrame = [...document.querySelectorAll('iframe')].some(f => /onenote|wopiframe/i.test(f.src || '') && !/^onenote\./i.test(location.hostname));
+if (oneNoteFrame || (/sharepoint\.com$|onedrive\.live\.com$|onenote\.com$/i.test(location.hostname) && /onenote/i.test(document.title))) {
+explain('OneNote keeps the notebook in a protected frame – a bookmark can’t read it. In the OneNote app: File → Save as PDF (on a Mac one page at a time, on Windows File → Export → Notebook).');
+return;
+}
+if (document.contentType === 'application/pdf' || window.PDFViewerApplication) {
+explain('This is a PDF already – open it and save it (⌘S).');
+return;
+}
 let title = document.title, parts = [];
 try {
 const moodle = location.pathname.match(/^(.*)\/mod\/book\/(view\.php|tool\/print\/index\.php)$/);
@@ -138,7 +208,13 @@ say('Error: ' + e.message + ' – printing what is there');
 await sleep(1500);
 }
 if (stop) return;
-
+const probe = new DOMParser().parseFromString(parts.join(''), 'text/html').body;
+if (probe.textContent.replace(/\s+/g, '').length + 200 * probe.querySelectorAll('img,svg,math,table,pre').length < 80) {
+if (pdfs().length) explain('The book here is a PDF already:');
+else if (drawn()) explain('This reader shows the book as pictures, not as text – Book → PDF can’t save it.');
+else explain('No text found on this page.');
+return;
+}
 const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const css = 'body{font:15px/1.6 -apple-system,"Segoe UI",system-ui,sans-serif;color:#111;background:#fff;max-width:780px;margin:0 auto;padding:28px}'
 + 'img,svg,video{max-width:100%;height:auto}pre{white-space:pre-wrap;word-break:break-word;background:#f4f4f4;padding:10px;border-radius:6px}'
@@ -150,6 +226,7 @@ document.open();
 document.write('<!doctype html><html lang="' + esc(lang) + '"><head><meta charset="utf-8"><title>' + esc(title) + '</title><style>' + css + '</style></head><body>'
 + parts.map(p => '<div class="buch-pdf-page">' + p + '</div>').join('\n') + '</body></html>');
 document.close();
+await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 await Promise.all([...document.images].map(i => i.complete ? 0 : new Promise(r => { i.onload = i.onerror = r; setTimeout(r, 10000); })));
 window.__buchPdf = 0;
 window.__buchPdfPages = n;
