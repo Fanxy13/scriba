@@ -9,7 +9,7 @@ const MAX = window.__buchPdfMax || 500;
 const box = document.createElement('div');
 box.id = 'buch-pdf-box';
 box.style.cssText = 'all:initial;position:fixed;z-index:2147483647;top:16px;right:16px;max-width:380px;display:flex;gap:12px;align-items:center;padding:12px 16px;border-radius:14px;background:#0b0f12;color:#eef2ee;font:14px/1.4 -apple-system,system-ui,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.35)';
-box.innerHTML = '<b style="color:#f8b8d0;font-weight:600">Book → PDF</b><span>…</span><button title="Cancel" style="all:unset;cursor:pointer;opacity:.6;padding:0 2px">✕</button>';
+box.innerHTML = '<b style="color:#f8b8d0;font-weight:600;white-space:nowrap">Book → PDF</b><span>…</span><button title="Cancel" style="all:unset;cursor:pointer;opacity:.6;padding:0 2px">✕</button>';
 let stop = false;
 const say = t => { box.children[1].textContent = t; };
 box.children[2].onclick = () => { stop = true; box.remove(); window.__buchPdf = 0; };
