@@ -221,12 +221,17 @@ func norm(_ s: String) -> String {
     String(s.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(Character.init))
 }
 
-/// Lines that open or close most pages (a header, a footer, "Seite 3 von 12") – left out of every page
+/// Lines that open or close most pages (a header, a footer, "Seite 3 von 12") – left out of every page. So are the
+/// lines a browser prints itself: the address with "3/60" at the bottom, date and time at the top.
 func dropRepeated(_ pages: inout [[String]]) {
     let n = pages.filter { !$0.isEmpty }.count
     let pageNumber = try! NSRegularExpression(pattern: #"^\s*(seite|page|s\.)?\s*\d{1,4}\s*((/|von|of)\s*\d{1,4})?\s*$"#,
                                               options: .caseInsensitive)
-    func isNumber(_ s: String) -> Bool { pageNumber.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil }
+    let browser = try! NSRegularExpression(pattern: #"^\s*((https?|file)://\S+(\s+\d{1,4}\s*/\s*\d{1,4})?|\d{1,2}[./]\d{1,2}[./]\d{2,4},?\s+\d{1,2}:\d{2}(\s.*)?)\s*$"#)
+    func isNumber(_ s: String) -> Bool {
+        let r = NSRange(s.startIndex..., in: s)
+        return pageNumber.firstMatch(in: s, range: r) != nil || browser.firstMatch(in: s, range: r) != nil
+    }
     func key(_ s: String) -> String { String(norm(s).map { $0.isNumber ? "#" : $0 }) }
     func edges(_ p: [String]) -> [Int] {
         let idx = p.indices.filter { !p[$0].isEmpty }
@@ -235,7 +240,7 @@ func dropRepeated(_ pages: inout [[String]]) {
     var count: [String: Int] = [:]
     for p in pages {
         var seen = Set<String>()
-        for i in edges(p) { let k = key(p[i]); if !k.isEmpty, p[i].count < 120, seen.insert(k).inserted { count[k, default: 0] += 1 } }
+        for i in edges(p) { let k = key(p[i]); if !k.isEmpty, p[i].count < 400, seen.insert(k).inserted { count[k, default: 0] += 1 } }
     }
     let repeated = n >= 3 ? Set(count.filter { $0.value >= max(3, (n + 1) / 2) }.keys) : []
     for i in pages.indices {

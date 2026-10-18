@@ -286,7 +286,9 @@ model_down() {
 typeset -g SC_SYS='You clean up text that was read from a school document, so that another AI can learn from it. The text came from text recognition of a scan, photo or screenshot, or from a PDF that broke its formulas apart.
 
 Write the same content again as clean, compact Markdown:
-- Keep everything that carries meaning: headings, explanations, definitions, examples, tasks, numbers, units, calculations, solutions, code. Never add, explain, summarize, translate or solve anything.
+- Keep everything that carries meaning: headings, explanations, definitions, examples, tasks, numbers, units, calculations, solutions, code. Keep every sentence of running text – never shorten a story or an explanation.
+- Never add, explain, summarize, translate, calculate or solve anything. A task with an empty space for the answer stays empty: write no results, no values and no steps that are not in the text.
+- A diagram or chart: only its labels and values as they are, never a table or numbers made up from it.
 - Keep the language of the text (usually German; Swiss German spelling writes ss, never ß).
 - Repair: join words and lines that were broken apart, and fix clear recognition mistakes (0/O, 1/l/I, rn/m, a lost umlaut) – only when you are sure.
 - Leave out what carries no meaning: page numbers, scraps of menus and buttons in screenshots, single letters, broken fragments.
@@ -315,10 +317,52 @@ ask_ai() {
   ls=("${(@)ls:#(---|\*\*\*|___)}")
   REPLY=${(F)ls}
   while [[ $REPLY == *$N$N$N* ]]; do REPLY=${REPLY//$N$N$N/$N$N}; done
+  REPLY=${REPLY//ß/ss}     # Swiss spelling – the model writes ß now and then, even when told not to
   # LaTeX the way the rest is written: $…$ and $$…$$
   local o1='\( ' o2='\(' c1=' \)' c2='\)' d1='\[' d2='\]'
   REPLY=${${${${${${REPLY//$o1/\$}//$o2/\$}//$c1/\$}//$c2/\$}//$d1/\$\$}//$d2/\$\$}
   [[ -n $REPLY ]]
+}
+
+# Did the AI stay with the text? No number that is not there (a result it worked out, a table it made up), not
+# many words of its own, and not most of a longer text left out. Otherwise the text stays as it was read.
+typeset -gA SC_DIGIT=(⁰ 0 ¹ 1 ² 2 ³ 3 ⁴ 4 ⁵ 5 ⁶ 6 ⁷ 7 ⁸ 8 ⁹ 9 ₀ 0 ₁ 1 ₂ 2 ₃ 3 ₄ 4 ₅ 5 ₆ 6 ₇ 7 ₈ 8 ₉ 9)
+numbers_of() {   # <text> → REPLY: its numbers of 2 digits or more, "|"-separated; 40 000, 12'978 and 0,683 are one
+  local t=$1 c before
+  for c in ${(k)SC_DIGIT}; do t=${t//$c/$SC_DIGIT[$c]}; done
+  while :; do
+    before=$t
+    t=${t//(#b)([0-9])[ ’\'.,  ]([0-9])/$match[1]$match[2]}
+    [[ $t == $before ]] && break
+  done
+  local -a runs=(${(s: :)${t//[^0-9]/ }})
+  runs=(${(M)runs:#[0-9](#c2,)})
+  REPLY="|${(j:|:)runs}|"
+}
+words_of() {   # <text> → reply: its words of 6 letters or more, small, without LaTeX commands
+  local t=${(L)1//\\[[:alpha:]]##/ }
+  local -a w=(${(s: :)${t//[^[:alpha:]]/ }})
+  reply=(${(u)${(M)w:#[[:alpha:]](#c6,)}})
+}
+faithful() {   # <before> <after> – REPLY and reply stay as they were (the caller's answer is in them)
+  local n keep=$REPLY have
+  local -a keep_list=("${reply[@]}") a b
+  local -i ok=1 novel lost
+  numbers_of $1; have=$REPLY
+  numbers_of $2
+  for n in ${(s:|:)REPLY}; do [[ $have == *$n* ]] || { ok=0; break }; done
+  # the steps of an equation ("= 6 | +3") keep their bars – without them a step becomes part of the equation
+  (( ${#${2//[^|]/}} < ${#${1//[^|]/}} )) && ok=0
+  if (( ok )); then
+    words_of $1; a=($reply)
+    words_of $2; b=($reply)
+    local -a new=(${b:|a}) gone=(${a:|b})
+    novel=${#new} lost=${#gone}
+    (( ${#b} >= 8 && novel * 100 > ${#b} * 30 )) && ok=0
+    (( ${#a} >= 30 && lost * 100 > ${#a} * 50 )) && ok=0
+  fi
+  REPLY=$keep reply=("${keep_list[@]}")
+  (( ok ))
 }
 
 # Did the AI keep the content? Not much shorter (it summarized) and not much longer (it explained)
@@ -327,6 +371,17 @@ kept() {   # <before> <after>
   (( a < 80 )) && return 0
   (( b * 100 >= a * 45 && b <= a * 3 + 400 ))
 }
+
+# <message> <text> <test> → REPLY: the AI's clean-up of <text>, when "<test> <text> <answer>" passes. An answer that
+# strays from the text (a solution path written anew, a story cut short) gets one more, stricter try.
+ask_true() {
+  ask_ai $1 || return 1
+  $3 $2 $REPLY && return 0
+  (( SC_STOP )) && return 1
+  ask_ai "$1$N${N}Go through it line by line: every line of the text becomes one line of your answer, in the same order – nothing added, nothing left out, no step and no result of your own. Only join what was broken apart, fix clear recognition mistakes and write formulas in LaTeX, steps of an equation with their bar." && $3 $2 $REPLY
+}
+same_text() { kept $1 $2 && faithful $1 $2 }
+same_pic()  { [[ $2 == (-|–|—) ]] || faithful $1 $2 }
 
 # Pieces of at most <n> characters, at line ends → reply
 chunks() {   # <text> <n>
@@ -370,7 +425,7 @@ clean_unit() {   # <i> <file name> → SC_UT[i]
     for (( p = 1; p <= ${#parts}; p++ )); do
       (( ${#parts} > 1 )) && bg_ui_note "$where · Teil $p von ${#parts}"
       part=$parts[p]
-      if ask_ai "$where, $how:"$'\n\n'"$part" && kept $part $REPLY; then out+=${out:+$'\n'}$REPLY
+      if ask_true "$where, $how:"$'\n\n'"$part" $part same_text; then out+=${out:+$'\n'}$REPLY
       else (( SC_STOP )) && return 1; out+=${out:+$'\n'}$part; fi
     done
     if (( ${#pics} )); then
@@ -394,7 +449,18 @@ clean_unit() {   # <i> <file name> → SC_UT[i]
     if [[ $lines[n] != '[Bildtext]' ]]; then kept_lines+=("$lines[n]"); continue; fi
     block=
     while (( ++n <= ${#lines} )) && [[ -n $lines[n] ]]; do block+=${block:+$'\n'}$lines[n]; done
-    if ask_ai "Text read from a picture on $where – usually a screenshot. The text around the picture is only context: never repeat it, never translate anything.
+    # a whole page as a picture (a printout of a worksheet, a scan): all of it · a screenshot: what matters
+    local ask=
+    if (( ${#block} >= 400 )); then
+      ask="Text read from a picture of a whole page (a printout of a worksheet or a scan) on $where. Write all of it again as clean Markdown, every sentence, in the language it is in. The text around the picture is only context: never repeat it.
+
+Context:
+$ctx
+
+Text from the picture:
+$block"
+    else
+      ask="Text read from a picture on $where – usually a screenshot. The text around the picture is only context: never repeat it, never translate anything.
 
 Context:
 $ctx
@@ -402,7 +468,9 @@ $ctx
 Text from the picture:
 $block
 
-Keep only what someone learning this needs: code, commands, formulas, values, error messages, labels the context refers to. Drop menus, navigation, lists of buttons, links, ads and broken scraps. Write it as compact Markdown in the language it is in – no bold, no lines or separators. If nothing is worth keeping, answer with a single -"; then
+Keep only what someone learning this needs: code, commands, formulas, values, error messages, labels the context refers to. Drop menus, navigation, lists of buttons, links, ads and broken scraps. Write it as compact Markdown in the language it is in – no bold, no lines or separators. If nothing is worth keeping, answer with a single -"
+    fi
+    if ask_true $ask $block same_pic; then
       [[ $REPLY == (-|–|—) ]] || kept_lines+=('[Bildtext]' "${(@f)REPLY}" '')
     else
       (( SC_STOP )) && return 1
@@ -462,17 +530,25 @@ combine() {   # <subject>
   local k body= md date
   local -i n=0
   outdir; local out=$REPLY
-  local text prefix
+  local text
   for k in ${(ko)SC_M}; do
     [[ ${SC_M[$k]##* } == -1 ]] && continue
     md="$out/$1/$k.md"
     [[ -r $md ]] || continue
     text=$(<$md)
-    # the pictures are next to the file's .md: from here they are in the subject's folder
+    # Claude does not see pictures in a text file: no links here (they cost tokens), only "[Bild]" where no text
+    # was read from the picture – the pictures stay linked in the file's own .md
     if [[ $text == *'![Bild'* ]]; then
-      if [[ $k == */* ]]; then enc "$1/${k:h}/"; else enc "$1/"; fi
-      prefix=$REPLY
-      text=${text//(#b)\!\[Bild([^\]]#)\]\(/![Bild${match[1]}](${prefix}}
+      local -a ls=("${(@f)text}") kept=()
+      local -i j=0
+      for (( j = 1; j <= ${#ls}; j++ )); do
+        if [[ $ls[j] == '![Bild'*']('*')' ]]; then
+          [[ $ls[j+1] == '[Bildtext]' || ( -z $ls[j+1] && $ls[j+2] == '[Bildtext]' ) ]] || kept+=('[Bild]')
+        else
+          kept+=("$ls[j]")
+        fi
+      done
+      text=${(F)kept}
     fi
     body+=$text$'\n\n'
     (( n++ ))
@@ -483,7 +559,7 @@ combine() {   # <subject>
   files_word $n
   print -r -- "# Fach: $1
 Scriba · $date · $REPLY · $tok
-Marken: [S. n] Seite · [Folie n] · [Blatt …] Excel-Blatt · [Scan] aus einem Scan gelesen · ![Bild …] ein Bild · [Bildtext] Text aus einem Bild · [?] unleserlich · Formeln in LaTeX
+Marken: [S. n] Seite · [Folie n] · [Blatt …] Excel-Blatt · [Scan] aus einem Scan gelesen · [Bild] ein Bild ohne Text · [Bildtext] Text aus einem Bild · [?] unleserlich · Formeln in LaTeX
 
 ${body%$N$N}" >| "$out/$1.md"
 }

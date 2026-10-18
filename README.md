@@ -96,7 +96,8 @@ public int summe(int a, int b) {
 - **Bilder** stehen als Bilder in den .md-Dateien, dort wo sie im Original waren – aus PDFs genau ausgeschnitten,
   gescannte Seiten ganz. Du siehst sie in jedem Markdown-Programm (VS Code, Obsidian, Typora, GitHub); die Vorschau
   im Finder zeigt .md nur als Text. Claude sieht Bilder in einer .md-Datei nicht, es liest ihren erkannten Text –
-  brauchst du ein Bild in Claude, lade es aus dem `… Bilder`-Ordner in den Chat.
+  darum stehen in der Datei mit allem (`Mathematik.md`) keine Bildlinks, die kosten nur Tokens. Brauchst du ein Bild
+  in Claude, lade es aus dem `… Bilder`-Ordner in den Chat.
 - Kopf- und Fusszeilen, Seitenzahlen und Punkte im Inhaltsverzeichnis fliegen raus – die kosten nur Tokens.
 
 ## Die KI
@@ -107,6 +108,10 @@ hilft – Scans, Fotos, Screenshots und Formeln, die ein PDF zerrissen hat. Sie 
 - das Modell von Lotus (`lotus ai local`, z. B. Nucifera 20B),
 - Apple Intelligence,
 - oder Ollama.
+
+Die KI darf nur abschreiben und aufräumen, nie rechnen oder ergänzen: Bringt ihre Antwort eine Zahl, die nicht im
+erkannten Text steht, viele eigene Wörter oder lässt sie einen grossen Teil weg, bleibt der Text so, wie er gelesen
+wurde – lieber unschön als falsch.
 
 Ohne KI geht es auch – dann nur mit Texterkennung, schneller. Einstellen in `/scriba einstellungen`.
 
