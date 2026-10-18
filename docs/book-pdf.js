@@ -1,6 +1,8 @@
 // Book → PDF – a bookmarklet of Scriba: a book made of web pages becomes one page, then the browser's "Print"
-// opens – "Save as PDF" there. Moodle books: their own print view · mdBook and others with "Print this book": that page · otherwise page after page
-// along "Next", "Weiter" or rel=next (same site only, at most 500 pages). Protected e-book readers stay as they are.
+// opens – "Save as PDF" there. Moodle books: their own print view · mdBook and others with "Print this book": that page ·
+// OneNote for the web: opened on its own by the first click, then every section and page · Word, PowerPoint, Excel on
+// OneDrive or SharePoint: the file itself · otherwise page after page along "Next", "Weiter" or rel=next (same site
+// only, at most 500 pages). Protected e-book readers stay as they are.
 // docs/index.html turns this file into the bookmark: full-line comments go, the rest is the code.
 void (async () => {
 if (window.__buchPdf) return;
