@@ -15,6 +15,7 @@ const say = t => { box.children[1].textContent = t; };
 box.children[2].onclick = () => { stop = true; box.remove(); window.__buchPdf = 0; };
 document.body.appendChild(box);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const clean = u => u.split('#')[0];
 
 // a page of the same site, as a document whose links and pictures point to the right place
@@ -50,25 +51,12 @@ if (all.length && all.reduce((n, e) => n + e.textContent.trim().length, 0) > 200
 return [doc.body];
 };
 const isPdf = e => { const s = e.getAttribute('src') || e.getAttribute('data') || ''; return s && (/\.pdf([?#]|$)/i.test(s) || /pdf/i.test(e.getAttribute('type') || '')); };
-const html = (doc, sel, depth = 0) => pick(doc, sel).map(root => {
-const c = root.cloneNode(true);
-// what frames of the same site and shadow DOM show goes into the copy, before anything is taken out
-const orig = [root, ...root.querySelectorAll('*')], copy = [c, ...c.querySelectorAll('*')];
-orig.forEach((e, i) => {
-const k = copy[i];
-if (!k) return;
-if (e.tagName === 'IFRAME' && depth < 2 && !isPdf(e)) {
-let d = null;
-try { d = e.contentDocument; } catch (err) {}
-if (d && d.body && d.body.textContent.trim().length > 40) { const div = document.createElement('div'); div.innerHTML = html(d, null, depth + 1); k.replaceWith(div); }
-} else if (e.shadowRoot && e.shadowRoot.textContent.trim().length > e.textContent.trim().length) {
-k.innerHTML = e.shadowRoot.innerHTML;
-}
-});
+// what is left of a page's content for paper: no navigation, buttons, site colors or links to the page before and after
+const tidy = (c, base) => {
 // a PDF shown in the page prints as an empty box: a link to it instead
 c.querySelectorAll('iframe,embed,object').forEach(e => {
 if (!isPdf(e)) return;
-const u = new URL(e.getAttribute('src') || e.getAttribute('data'), doc.baseURI);
+const u = new URL(e.getAttribute('src') || e.getAttribute('data'), base);
 const p = document.createElement('p');
 const a = document.createElement('a');
 a.href = u.href;
@@ -88,7 +76,7 @@ if (JUNK.test((e.className && e.className.baseVal === undefined ? e.className : 
 });
 c.querySelectorAll('img').forEach(i => {
 const lazy = i.getAttribute('data-src') || i.getAttribute('data-lazy-src') || i.getAttribute('data-original');
-if (lazy) i.setAttribute('src', new URL(lazy, doc.baseURI).href);
+if (lazy) i.setAttribute('src', new URL(lazy, base).href);
 else if (i.getAttribute('src')) i.setAttribute('src', i.src);
 i.removeAttribute('srcset');
 i.removeAttribute('sizes');
@@ -101,6 +89,23 @@ if ((/^[¶#§🔗]?$/.test(t) && !a.querySelector('img')) || (t.length < 40 && P
 else a.setAttribute('href', a.href);
 });
 c.querySelectorAll('canvas').forEach(e => e.remove());
+};
+const html = (doc, sel, depth = 0) => pick(doc, sel).map(root => {
+const c = root.cloneNode(true);
+// what frames of the same site and shadow DOM show goes into the copy, before anything is taken out
+const orig = [root, ...root.querySelectorAll('*')], copy = [c, ...c.querySelectorAll('*')];
+orig.forEach((e, i) => {
+const k = copy[i];
+if (!k) return;
+if (e.tagName === 'IFRAME' && depth < 2 && !isPdf(e)) {
+let d = null;
+try { d = e.contentDocument; } catch (err) {}
+if (d && d.body && d.body.textContent.trim().length > 40) { const div = document.createElement('div'); div.innerHTML = html(d, null, depth + 1); k.replaceWith(div); }
+} else if (e.shadowRoot && e.shadowRoot.textContent.trim().length > e.textContent.trim().length) {
+k.innerHTML = e.shadowRoot.innerHTML;
+}
+});
+tidy(c, doc.baseURI);
 return c.innerHTML;
 }).join('\n');
 
@@ -158,21 +163,110 @@ if (/(^|\.)fanxy13\.github\.io$/.test(location.hostname) && location.pathname.st
 explain('Open a book first – then click the bookmark there.');
 return;
 }
-// OneNote for the web keeps the notebook in a frame of another Microsoft site: a bookmark cannot look into it
-const oneNoteFrame = [...document.querySelectorAll('iframe')].some(f => /onenote|wopiframe/i.test(f.src || '') && !/^onenote\./i.test(location.hostname));
-if (oneNoteFrame || (/sharepoint\.com$|onedrive\.live\.com$|onenote\.com$/i.test(location.hostname) && /onenote/i.test(document.title))) {
-explain('OneNote keeps the notebook in a protected frame – a bookmark can’t read it. In the OneNote app: File → Save as PDF (on a Mac one page at a time, on Windows File → Export → Notebook).');
+// OneDrive and SharePoint start Office for the web in a frame of officeapps.live.com with the form office_form – a
+// bookmark cannot look into that frame. OneNote: the same form, sent into the whole tab, runs OneNote on its own,
+// and the next click reads it. Word, PowerPoint, Excel, a PDF: the file itself, the way OneDrive's Download gets it.
+const office = document.forms.office_form && /officeapps/i.test(document.forms.office_form.action) ? document.forms.office_form : null;
+if (office) {
+const field = n => (office.elements[n] && office.elements[n].value) || '';
+const ext = field('fileExtension').toLowerCase(), name = field('fileName') || document.title;
+if (/onenote/i.test(office.action) || /^one/.test(ext)) {
+explain('Opening OneNote on its own … when it is there, click Book → PDF once more.');
+window.__buchPdfInfo = 'onenote-open';
+setTimeout(() => { office.target = '_self'; office.submit(); }, 1800);
+return;
+}
+if (field('fileGetUrl')) {
+const a = document.createElement('a');
+a.href = field('fileGetUrl');
+document.body.appendChild(a);
+a.click();
+a.remove();
+explain(ext === 'pdf' ? 'Downloading “' + name + '”.' : 'Downloading “' + name + '” – Scriba reads it as it is. As a PDF: File → Save as → Download as PDF.');
+return;
+}
+}
+// elsewhere (Teams, a page that embeds it) the frame stays closed to a bookmark
+const oneNoteFrame = [...document.querySelectorAll('iframe')].some(f => /onenote|wopiframe|officeapps/i.test(f.src || '') && !/officeapps\.live\.com$/i.test(location.hostname));
+if (oneNoteFrame) {
+explain('OneNote runs in a frame here that a bookmark can’t open. Open the notebook in its own browser tab (in Teams: ⋯ → Open in browser) and click Book → PDF there.');
 return;
 }
 if (document.contentType === 'application/pdf' || window.PDFViewerApplication) {
 explain('This is a PDF already – open it and save it (⌘S).');
 return;
 }
-let title = document.title, parts = [];
+// OneNote for the web on its own in the tab: every section and every page, clicked through like a person would
+const inOneNote = document.getElementById('NavPaneSectionList') && document.getElementById('WACViewPanel');
+const oneNote = async () => {
+const out = [];
+const items = id => [...document.querySelectorAll('#' + id + ' [role=treeitem]')];
+const name = e => (e.innerText || e.textContent || '').trim().split('\n')[0].trim();
+const view = () => document.getElementById('WACViewPanel_EditingElement') || document.getElementById('WACViewPanel');
+// until nothing changes for a moment: OneNote builds a page in steps
+const quiet = async (get, ms = 900) => {
+let last = '', same = 0;
+for (let i = 0; i < 100 && same * 150 < ms && !stop; i++) {
+await sleep(150);
+const e = get(), now = e ? e.innerHTML.length + ':' + e.querySelectorAll('img').length : '';
+same = now === last ? same + 1 : 0;
+last = now;
+}
+};
+// a page as HTML: ink (canvas) and pictures that only live in this tab (blob:, this site) as data
+const page = async (el, where) => {
+const c = el.cloneNode(true);
+const drawn = [...el.querySelectorAll('canvas')], copies = [...c.querySelectorAll('canvas')];
+drawn.forEach((cv, i) => { try { const img = document.createElement('img'); img.src = cv.toDataURL(); copies[i].replaceWith(img); } catch (e) {} });
+for (const img of c.querySelectorAll('img')) {
+const src = img.getAttribute('src') || '';
+if (!/^blob:|^\/(?!\/)/.test(src) && !src.startsWith(location.origin)) continue;
+try {
+const b = await (await fetch(new URL(src, location.href), { credentials: 'include' })).blob();
+img.src = await new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(b); });
+} catch (e) {}
+}
+c.querySelectorAll('[contenteditable]').forEach(e => e.removeAttribute('contenteditable'));
+tidy(c, location.href);
+return '<p class="buch-pdf-where">' + esc(where) + '</p>' + c.innerHTML;
+};
+const done = new Set();
+for (let round = 0; round < 500 && !stop; round++) {
+const sec = items('NavPaneSectionList').find(e => !done.has(name(e) + '|' + (e.getAttribute('aria-level') || '')));
+if (!sec) break;
+const secName = name(sec);
+done.add(secName + '|' + (sec.getAttribute('aria-level') || ''));
+say('Section ' + done.size + ' · ' + secName);
+const before = items('PageList').map(name).join('|');
+sec.click();
+await quiet(() => document.getElementById('PageList'));
+// a section group only opens and shows its sections: they come in the next rounds
+if (round > 0 && sec.hasAttribute('aria-expanded') && items('PageList').map(name).join('|') === before) continue;
+const n = items('PageList').length;
+for (let p = 0; p < n && !stop; p++) {
+const it = items('PageList')[p];
+if (!it) break;
+const was = view() ? view().textContent : '';
+it.click();
+for (let t = 0; t < 60 && view() && view().textContent === was && !stop; t++) await sleep(150);
+await quiet(view);
+say('Section ' + done.size + ' · page ' + (p + 1) + ' / ' + n);
+if (view()) out.push(await page(view(), secName + ' › ' + name(it)));
+}
+}
+return out;
+};
+let title = document.title, parts = [], breaks = false;
 try {
 const moodle = location.pathname.match(/^(.*)\/mod\/book\/(view\.php|tool\/print\/index\.php)$/);
 const id = new URLSearchParams(location.search).get('id');
-if (moodle && id) {
+if (inOneNote) {
+const head = document.getElementById('AppHeaderPanel');
+title = (head && head.innerText.trim().split('\n')[0]) || title;
+parts = await oneNote();
+breaks = true;
+if (!parts.length && !stop) { explain('No pages found in this notebook.'); return; }
+} else if (moodle && id) {
 say('Moodle book …');
 const d = moodle[2] === 'view.php' ? await fetchDoc(location.origin + moodle[1] + '/mod/book/tool/print/index.php?id=' + id) : document;
 title = d.title || title;
@@ -215,11 +309,12 @@ else if (drawn()) explain('This reader shows the book as pictures, not as text �
 else explain('No text found on this page.');
 return;
 }
-const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const css = 'body{font:15px/1.6 -apple-system,"Segoe UI",system-ui,sans-serif;color:#111;background:#fff;max-width:780px;margin:0 auto;padding:28px}'
 + 'img,svg,video{max-width:100%;height:auto}pre{white-space:pre-wrap;word-break:break-word;background:#f4f4f4;padding:10px;border-radius:6px}'
 + 'code{font-family:ui-monospace,Menlo,monospace;font-size:.92em}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #ccc;padding:4px 7px;vertical-align:top}'
 + '.buch-pdf-page+.buch-pdf-page{border-top:1px solid #ddd;margin-top:30px;padding-top:14px}a{color:inherit}'
++ '.buch-pdf-where{font-size:12px;color:#777;margin:0 0 10px}'
++ (breaks ? '.buch-pdf-page+.buch-pdf-page{break-before:page;border-top:0;margin-top:0;padding-top:0}' : '')
 + '@page{margin:16mm}@media print{body{padding:0;max-width:none}h1,h2,h3,h4{break-after:avoid}img,pre,table,figure{break-inside:avoid}}';
 const n = parts.length, lang = document.documentElement.lang || 'en';
 document.open();
