@@ -1,8 +1,8 @@
 // Book → PDF – a bookmarklet of Scriba: a book made of web pages becomes one page, then the browser's "Print"
 // opens – "Save as PDF" there. Moodle books: their own print view · mdBook and others with "Print this book": that page ·
-// OneNote for the web: opened on its own by the first click, then every section and page · Word, PowerPoint, Excel on
-// OneDrive or SharePoint: the file itself · otherwise page after page along "Next", "Weiter" or rel=next (same site
-// only, at most 500 pages). Protected e-book readers stay as they are.
+// OneNote for the web: opened on its own by the first click, then the page that is open, a part or all of it · Word,
+// PowerPoint, Excel on OneDrive or SharePoint: the file itself · otherwise page after page along "Next", "Weiter" or
+// rel=next (same site only, at most 500 pages). Protected e-book readers stay as they are.
 // docs/index.html turns this file into the bookmark: full-line comments go, the rest is the code.
 void (async () => {
 if (window.__buchPdf) return;
@@ -230,9 +230,10 @@ if (document.contentType === 'application/pdf' || window.PDFViewerApplication) {
 explain('This is a PDF already – open it and save it (⌘S).');
 return;
 }
-// OneNote for the web on its own in the tab. It asks what to save – the content library, one section group, or all
-// of it – then opens group after group and clicks through every section and page like a person would. Pictures of
-// printouts (a Word file or PDF put into OneNote) load only when they are in view: it scrolls to each one first.
+// OneNote for the web on its own in the tab. It asks what to save – the page that is open, the content library, one
+// section group, or all of it – then opens group after group and clicks through every section and page like a person
+// would. Pictures of printouts (a Word file or PDF put into OneNote) load only when they are in view: it scrolls to
+// each one first.
 const inOneNote = document.getElementById('NavPaneSectionList') && document.getElementById('WACViewPanel');
 const oneNote = async () => {
 const out = [];
@@ -255,6 +256,10 @@ const byPath = p => sections().find(e => pathOf(e) === p);
 const pages = () => { const n = [...document.querySelectorAll('#PageList .pageNode')]; return n.length ? n : [...document.querySelectorAll('#PageList [role=treeitem]')]; };
 const view = () => document.getElementById('PageContentContainer') || document.getElementById('WACViewPanel');
 const titleNow = () => { const t = document.querySelector('#PageContentContainer .Title'); return t ? t.innerText.trim() : ''; };
+// the entry of a list that is open: the last one marked as selected (a section of a group comes after the group), else
+// the last one with a selected part
+const SEL = '[aria-selected=true],[aria-current]:not([aria-current=false])';
+const chosen = list => list.filter(e => e.matches(SEL)).pop() || list.filter(e => e.querySelector(SEL)).pop();
 // until nothing changes for a moment: OneNote builds a page in steps
 const quiet = async (get, ms = 900) => {
 let last = '', same = 0;
@@ -265,8 +270,22 @@ same = now === last ? same + 1 : 0;
 last = now;
 }
 };
-// what to save: the parts at the top of the notebook, or all of it
+// the page that is open, once OneNote has built it – printouts: it scrolls to each picture until it is there
+const read = async (sec, name) => {
+await quiet(view);
+const v = view();
+if (!v) return null;
+for (const img of [...v.querySelectorAll('img')]) {
+if (img.closest('.OutlineResizeHandleContainer') || (img.complete && img.naturalWidth)) continue;
+(img.closest('.WACImageContainer') || img).scrollIntoView({ block: 'center' });
+for (let t = 0; t < 40 && !(img.complete && img.naturalWidth) && !stop; t++) await sleep(150);
+}
+return page(v, [sec && T(sec), titleNow().split('\n')[0] || name].filter(Boolean).join(' › '));
+};
+// what to save: the page that is open (its title, else its entry in the page list), the parts at the top of the
+// notebook, or all of it
 const top = sections().filter(e => !parentOf(e));
+const here = chosen(pages()), name = titleNow().split('\n')[0] || (here ? T(here) : ''), thisPage = {};
 const choice = await new Promise(done => {
 const msg = box.children[1];
 msg.textContent = 'What should I save?';
@@ -278,6 +297,7 @@ b.style.cssText = 'all:initial;font:inherit;display:block;margin-top:7px;padding
 b.onclick = () => done(value);
 msg.append(b);
 };
+if (name || document.querySelector('#PageContentContainer .Title')) offer(name ? 'This page · ' + name : 'This page', thisPage);
 const lib = top.find(e => /inhaltsbibliothek|content library|bibliothèque|biblioteca/i.test(T(e)));
 if (lib) offer(T(lib), pathOf(lib), true);
 top.filter(e => e !== lib).forEach(e => offer(T(e), pathOf(e)));
@@ -286,6 +306,14 @@ const close = box.children[2].onclick;
 box.children[2].onclick = () => { close(); done(null); };
 });
 if (!choice) { stop = true; return out; }
+// only the page that is open, as it is – nothing is clicked
+if (choice === thisPage) {
+say('This page …');
+const sec = chosen(sections()), got = await read(sec, name);
+if (got) out.push(got);
+window.__buchPdfChoice = [sec && pathOf(sec), titleNow().split('\n')[0] || name].filter(Boolean).join(' › ');
+return out;
+}
 window.__buchPdfChoice = choice;
 // the sections to save, groups opened (also groups inside groups)
 const list = [];
@@ -311,17 +339,9 @@ if (!it) break;
 const was = titleNow();
 (it.querySelector('[role=button]') || it).click();
 for (let t = 0; t < 40 && titleNow() === was && !stop; t++) await sleep(150);
-await quiet(view);
 say('Section ' + (s + 1) + ' / ' + list.length + ' · page ' + (p + 1) + ' / ' + n);
-// printouts: scroll to each picture until it is there
-const v = view();
-if (!v) continue;
-for (const img of [...v.querySelectorAll('img')]) {
-if (img.closest('.OutlineResizeHandleContainer') || (img.complete && img.naturalWidth)) continue;
-(img.closest('.WACImageContainer') || img).scrollIntoView({ block: 'center' });
-for (let t = 0; t < 40 && !(img.complete && img.naturalWidth) && !stop; t++) await sleep(150);
-}
-out.push(await page(v, T(sec) + ' › ' + (titleNow().split('\n')[0] || T(it))));
+const got = await read(sec, T(it));
+if (got) out.push(got);
 }
 }
 return out;
