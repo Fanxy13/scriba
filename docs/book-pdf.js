@@ -1,6 +1,6 @@
 // Book → PDF – a bookmarklet of Scriba: a book made of web pages becomes one page, then the browser's "Print"
 // opens – "Save as PDF" there. Moodle books: their own print view · mdBook and others with "Print this book": that page ·
-// OneNote for the web: opened on its own by the first click, then every section and page · Word, PowerPoint, Excel on
+// OneNote for the web: opened on its own by the first click, then the sections and pages you tick · Word, PowerPoint, Excel on
 // OneDrive or SharePoint: the file itself · otherwise page after page along "Next", "Weiter" or rel=next (same site
 // only, at most 500 pages). Protected e-book readers stay as they are.
 // docs/index.html turns this file into the bookmark: full-line comments go, the rest is the code.
@@ -230,10 +230,12 @@ if (document.contentType === 'application/pdf' || window.PDFViewerApplication) {
 explain('This is a PDF already – open it and save it (⌘S).');
 return;
 }
-// OneNote for the web on its own in the tab. It asks what to save – the content library, one section group, or all
-// of it – then opens group after group and clicks through every section and page like a person would. Pictures of
-// printouts (a Word file or PDF put into OneNote) load only when they are in view: it scrolls to each one first.
+// OneNote for the web on its own in the tab. It asks what to save – any groups, sections and single pages, ticked in a
+// tree – then clicks through every one of them like a person would. Pictures of printouts (a Word file or PDF put
+// into OneNote) load only when they are in view: it scrolls to each one first.
 const inOneNote = document.getElementById('NavPaneSectionList') && document.getElementById('WACViewPanel');
+const opts = { pics: true, sheets: true };
+let named = '';
 const oneNote = async () => {
 const out = [];
 const T = e => (e.innerText || e.textContent || '').trim().split('\n')[0].trim();
@@ -265,58 +267,141 @@ same = now === last ? same + 1 : 0;
 last = now;
 }
 };
-// what to save: the parts at the top of the notebook, or all of it
-const top = sections().filter(e => !parentOf(e));
-const choice = await new Promise(done => {
-const msg = box.children[1];
-msg.textContent = 'What should I save?';
-msg.style.cssText = 'all:initial;font:inherit;color:inherit;display:block';
-const offer = (label, value, strong) => {
-const b = document.createElement('button');
-b.textContent = label;
-b.style.cssText = 'all:initial;font:inherit;display:block;margin-top:7px;padding:6px 10px;border-radius:8px;cursor:pointer;color:' + (strong ? '#111;background:#f8b8d0' : '#eef2ee;background:#1d2428');
-b.onclick = () => done(value);
-msg.append(b);
+// what to save: the notebook as a tree with a box at every group, section and page. Groups are opened first; the pages
+// of a section are read when its "pages" is opened. The content library is ticked to begin with (else everything).
+const opened = new Set();
+for (let round = 0; round < 8 && !stop; round++) {
+const closed = sections().filter(e => isGroup(e) && e.getAttribute('aria-expanded') !== 'true' && !opened.has(pathOf(e))).map(pathOf);
+if (!closed.length) break;
+for (const p of closed) {
+opened.add(p);
+const e = byPath(p);
+if (e) { e.click(); await quiet(() => document.getElementById('NavPaneSectionList')); }
+}
+}
+const depthOf = e => { let d = 0; for (let x = parentOf(e); x; x = parentOf(x)) d++; return d; };
+const nodes = sections().map(e => ({ path: pathOf(e), label: T(e), depth: depthOf(e), group: isGroup(e), on: false, pages: null, open: false }));
+if (!nodes.length) return out;
+const leaves = n => nodes.filter(m => !m.group && m.path.startsWith(n.path + ' › '));
+// 1 = all of it, .5 = a part, 0 = nothing
+const state = n => {
+if (n.group) { const l = leaves(n).map(state); return l.length && l.every(s => s === 1) ? 1 : l.some(s => s) ? .5 : 0; }
+if (n.pages) { const k = n.pages.filter(p => p.on).length; return k && k === n.pages.length ? 1 : k ? .5 : 0; }
+return n.on ? 1 : 0;
 };
-const lib = top.find(e => /inhaltsbibliothek|content library|bibliothèque|biblioteca/i.test(T(e)));
-if (lib) offer(T(lib), pathOf(lib), true);
-top.filter(e => e !== lib).forEach(e => offer(T(e), pathOf(e)));
-offer('All of it', '*');
+const setSec = (n, v) => { n.on = v; if (n.pages) n.pages.forEach(p => { p.on = v; }); };
+const lib = nodes.find(n => !n.depth && /inhaltsbibliothek|content library|bibliothèque|biblioteca/i.test(n.label));
+for (const n of nodes) if (!n.group && (!lib || n === lib || n.path.startsWith(lib.path + ' › '))) setSec(n, true);
+const el = (tag, css, text) => {
+const e = document.createElement(tag);
+e.style.cssText = 'all:initial;font:inherit;color:inherit;display:block;' + css;
+if (text != null) e.textContent = text;
+return e;
+};
+const btn = (text, css, fn) => { const b = el('button', 'cursor:pointer;' + css, text); b.onclick = fn; return b; };
+const PINK = '#f8b8d0', GREY = '#8b979d', FIELD = 'background:#1d2428;border-radius:8px;padding:5px 9px;';
+const picked = await new Promise(done => {
+const msg = box.children[1], was = box.style.cssText;
+msg.textContent = '';
+box.style.cssText = was + ';width:min(480px,calc(100vw - 32px));max-width:none;box-sizing:border-box;align-items:flex-start;max-height:calc(100vh - 32px)';
+msg.style.cssText = 'all:initial;font:inherit;color:inherit;display:flex;flex-direction:column;gap:9px;flex:1;min-width:0';
+const find = el('input', 'flex:1;min-width:0;font-size:13px;border:1px solid #2c363b;' + FIELD);
+find.placeholder = 'Search …';
+['keydown', 'keyup', 'keypress'].forEach(t => find.addEventListener(t, e => e.stopPropagation()));
+const shown = n => {
+const f = find.value.trim().toLowerCase();
+return !f || nodes.some(m => m.path.toLowerCase().includes(f) && (m.path === n.path || m.path.startsWith(n.path + ' › ')));
+};
+const all = v => { nodes.filter(n => !n.group && shown(n)).forEach(n => setSec(n, v)); render(); };
+const bar = el('div', 'display:flex;gap:6px;align-items:center');
+bar.append(find, btn('All', FIELD, () => all(true)), btn('None', FIELD, () => all(false)));
+const list = el('div', 'overflow:auto;max-height:min(46vh,360px);padding-right:4px');
+const extra = el('div', 'border-top:1px solid #2c363b;padding-top:6px');
+const info = el('span', 'flex:1;font-size:13px;opacity:.75');
+const go = btn('Save as PDF', 'padding:7px 13px;border-radius:9px;font-weight:600;background:' + PINK + ';color:#111', () => { const p = nodes.filter(n => !n.group && state(n)); if (p.length) done(p); });
+const foot = el('div', 'display:flex;gap:10px;align-items:center');
+foot.append(info, go);
+msg.append(el('div', 'font-weight:600', 'What should I save?'), bar, list, extra, foot);
+const line = (indent, s, label, fn, bold) => {
+const row = el('div', 'display:flex;align-items:center;gap:6px;padding:3px 0 3px ' + indent + 'px');
+row.append(btn(s === 1 ? '☑' : s ? '▣' : '☐', 'width:18px;flex:none;color:' + (s ? PINK : GREY), fn));
+row.append(btn(label, 'flex:1;min-width:0;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' + (bold ? 'font-weight:600' : ''), fn));
+row.lastChild.title = label;
+return row;
+};
+let busy = false;
+const expand = async n => {
+if (busy) return;
+if (n.open) { n.open = false; render(); return; }
+if (!n.pages) {
+busy = true;
+info.textContent = 'Reading the pages …';
+const sec = byPath(n.path);
+if (sec) {
+sec.click();
+await quiet(() => document.getElementById('PageList'));
+const got = pages().map(it => ({ t: T(it), on: n.on }));
+if (got.length) n.pages = got;
+}
+busy = false;
+}
+n.open = !!n.pages;
+render();
+};
+const render = () => {
+const y = list.scrollTop;
+list.textContent = '';
+for (const n of nodes) {
+if (!shown(n)) continue;
+const fn = () => { const v = state(n) !== 1; (n.group ? leaves(n) : [n]).forEach(l => setSec(l, v)); render(); };
+const row = line(n.depth * 16, state(n), n.label || '…', fn, n.group);
+if (!n.group) row.append(btn((n.open ? '▾' : '▸') + ' pages', 'flex:none;font-size:12px;opacity:.65', () => expand(n)));
+list.append(row);
+if (n.open && n.pages) n.pages.forEach(p => list.append(line(n.depth * 16 + 24, p.on ? 1 : 0, p.t || 'Untitled', () => { p.on = !p.on; n.on = n.pages.some(q => q.on); render(); })));
+}
+list.scrollTop = y;
+extra.textContent = '';
+[['pics', 'Pictures and printouts'], ['sheets', 'Every page on a new sheet']].forEach(([k, label]) => extra.append(line(0, opts[k] ? 1 : 0, label, () => { opts[k] = !opts[k]; render(); })));
+const on = nodes.filter(n => !n.group && state(n));
+const pg = on.every(n => n.pages) ? ' · ' + on.reduce((s, n) => s + n.pages.filter(p => p.on).length, 0) + ' pages' : '';
+info.textContent = on.length + (on.length === 1 ? ' section' : ' sections') + pg;
+go.style.opacity = on.length ? '1' : '.4';
+};
+find.oninput = render;
+render();
 const close = box.children[2].onclick;
 box.children[2].onclick = () => { close(); done(null); };
+box.restore = () => { box.style.cssText = was; msg.style.cssText = ''; msg.textContent = '…'; };
 });
-if (!choice) { stop = true; return out; }
-window.__buchPdfChoice = choice;
-// the sections to save, groups opened (also groups inside groups)
-const list = [];
-const collect = async p => {
-const e = byPath(p);
-if (!e) return;
-if (!isGroup(e)) { list.push(p); return; }
-if (e.getAttribute('aria-expanded') !== 'true') { e.click(); await quiet(() => document.getElementById('NavPaneSectionList')); }
-const g = byPath(p);
-for (const k of sections().filter(k => parentOf(k) === g).map(pathOf)) await collect(k);
-};
-for (const p of choice === '*' ? top.map(pathOf) : [choice]) await collect(p);
-for (let s = 0; s < list.length && !stop; s++) {
-const sec = byPath(list[s]);
+if (!picked) { stop = true; return out; }
+box.restore();
+const tops = [...new Set(picked.map(n => n.path.split(' › ')[0]))];
+named = picked.length === 1 ? picked[0].label : tops.length === 1 ? tops[0] : '';
+window.__buchPdfChoice = picked.map(n => n.path);
+const jobs = picked.map(n => ({ path: n.path, only: n.pages && n.pages.some(p => !p.on) ? n.pages.map(p => p.on) : null }));
+for (let s = 0; s < jobs.length && !stop; s++) {
+const sec = byPath(jobs[s].path);
 if (!sec) continue;
-say('Section ' + (s + 1) + ' / ' + list.length + ' · ' + T(sec));
+say('Section ' + (s + 1) + ' / ' + jobs.length + ' · ' + T(sec));
 sec.click();
 await quiet(() => document.getElementById('PageList'));
 const n = pages().length;
+const want = jobs[s].only && jobs[s].only.length === n ? jobs[s].only : null;
+const total = want ? want.filter(Boolean).length : n;
+let k = 0;
 for (let p = 0; p < n && !stop; p++) {
+if (want && !want[p]) continue;
 const it = pages()[p];
 if (!it) break;
 const was = titleNow();
 (it.querySelector('[role=button]') || it).click();
 for (let t = 0; t < 40 && titleNow() === was && !stop; t++) await sleep(150);
 await quiet(view);
-say('Section ' + (s + 1) + ' / ' + list.length + ' · page ' + (p + 1) + ' / ' + n);
+say('Section ' + (s + 1) + ' / ' + jobs.length + ' · page ' + (++k) + ' / ' + total);
 // printouts: scroll to each picture until it is there
 const v = view();
 if (!v) continue;
-for (const img of [...v.querySelectorAll('img')]) {
+for (const img of opts.pics ? [...v.querySelectorAll('img')] : []) {
 if (img.closest('.OutlineResizeHandleContainer') || (img.complete && img.naturalWidth)) continue;
 (img.closest('.WACImageContainer') || img).scrollIntoView({ block: 'center' });
 for (let t = 0; t < 40 && !(img.complete && img.naturalWidth) && !stop; t++) await sleep(150);
@@ -332,7 +417,7 @@ const c = el.cloneNode(true);
 const orig = [...el.querySelectorAll('img')], copies = [...c.querySelectorAll('img')];
 for (let i = 0; i < copies.length; i++) {
 const o = orig[i], k = copies[i], src = k.getAttribute('src') || '';
-if (!src || k.closest('.OutlineResizeHandleContainer') || /onecdn\.static|static\.microsoft/.test(src) || (o && o.naturalWidth && o.naturalWidth < 48)) { k.remove(); continue; }
+if (!opts.pics || !src || k.closest('.OutlineResizeHandleContainer') || /onecdn\.static|static\.microsoft/.test(src) || (o && o.naturalWidth && o.naturalWidth < 48)) { k.remove(); continue; }
 if (!/^blob:/.test(src)) continue;
 try {
 const b = await (await fetch(src)).blob();
@@ -352,8 +437,8 @@ if (inOneNote) {
 const head = document.getElementById('AppHeaderPanel');
 title = (head && head.innerText.trim().split('\n')[0]) || title;
 parts = await oneNote();
-if (window.__buchPdfChoice && window.__buchPdfChoice !== '*') title = window.__buchPdfChoice.split(' › ').pop().replace(/^_/, '') + ' – ' + title;
-breaks = true;
+if (named) title = named.replace(/^_/, '') + ' – ' + title;
+breaks = opts.sheets;
 if (!parts.length && !stop) { explain('No pages found in this notebook.'); return; }
 } else if (moodle && id) {
 say('Moodle book …');
